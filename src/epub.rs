@@ -5,6 +5,9 @@ use std::{
     fs::File,
     io::{self, Read},
 };
+use image_ascii::TextGenerator;
+use std::io::Cursor;
+use image::io::Reader as ImageReader;
 
 pub struct Chapter {
     pub title: String,
@@ -69,7 +72,7 @@ impl Epub {
                 links: Vec::new(),
                 frag: Vec::new(),
             };
-            render(body, &mut c);
+            render(body, &mut c, self);
             if c.text.trim().is_empty() {
                 continue;
             }
@@ -159,21 +162,21 @@ impl Epub {
 }
 
 impl Chapter {
-    fn render(&mut self, n: Node, open: Attribute, close: Attribute) {
+    fn render(&mut self, n: Node, open: Attribute, close: Attribute, ea:&mut Epub) {
         self.state.set(open);
         self.attrs.push((self.text.len(), open, self.state));
-        self.render_text(n);
+        self.render_text(n, ea);
         self.state.unset(open);
         self.attrs.push((self.text.len(), close, self.state));
     }
-    fn render_text(&mut self, n: Node) {
+    fn render_text(&mut self, n: Node, ea:&mut Epub) {
         for child in n.children() {
-            render(child, self);
+            render(child, self, ea);
         }
     }
 }
 
-fn render(n: Node, c: &mut Chapter) {
+fn render(n: Node, c: &mut Chapter, ea:&mut Epub) {
     if n.is_text() {
         let text = n.text().unwrap();
         let content: Vec<_> = text.split_ascii_whitespace().collect();
@@ -195,34 +198,51 @@ fn render(n: Node, c: &mut Chapter) {
     match n.tag_name().name() {
         "br" => c.text.push('\n'),
         "hr" => c.text.push_str("\n* * *\n"),
-        "img" => c.text.push_str("\n[IMG]\n"),
+        "img" => {
+            match n.attribute("src") {
+                Some(url) => {
+                    c.text.push_str(&format!("\n[IMG][{}]\n",url));
+//                    let mut buffer = Vec::new();
+//                    ea.container.by_name(&format!("{}{}", ea.rootdir, url))
+//                    .unwrap()
+//                    .read_to_end(&mut buffer)
+//                    .unwrap();
+//                    let img = ImageReader::new(Cursor::new(buffer)).with_guessed_format().unwrap().decode().unwrap();
+//                    let result: String = TextGenerator::new(&img).generate();
+//                    c.text.push('\n');
+//                    c.text.push_str(&result);
+//                    c.text.push('\n');
+                }
+                _ => c.text.push_str("\n[IMG]\n"),
+            }
+        }
         "a" => {
             match n.attribute("href") {
                 // TODO open external urls in browser
                 Some(url) if !url.starts_with("http") => {
                     let start = c.text.len();
-                    c.render(n, Attribute::Underlined, Attribute::NoUnderline);
+                    c.render(n, Attribute::Underlined, Attribute::NoUnderline, ea);
                     c.links.push((start, c.text.len(), url.to_string()));
                 }
-                _ => c.render_text(n),
+                _ => c.render_text(n, ea),
             }
         }
-        "em" => c.render(n, Attribute::Italic, Attribute::NoItalic),
-        "strong" => c.render(n, Attribute::Bold, Attribute::NormalIntensity),
+        "em" => c.render(n, Attribute::Italic, Attribute::NoItalic, ea),
+        "strong" => c.render(n, Attribute::Bold, Attribute::NormalIntensity, ea),
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
-            c.text.push('\n');
-            c.render(n, Attribute::Bold, Attribute::NormalIntensity);
-            c.text.push('\n');
+            c.text.push_str(" ");
+            c.render(n, Attribute::Bold, Attribute::NormalIntensity, ea);
+            c.text.push_str("\n--------------\n");
         }
         "blockquote" | "div" | "p" | "tr" => {
             // TODO compress newlines
             c.text.push('\n');
-            c.render_text(n);
+            c.render_text(n, ea);
             c.text.push('\n');
         }
         "li" => {
-            c.text.push_str("\n- ");
-            c.render_text(n);
+            c.text.push_str("\n ");
+            c.render_text(n, ea);
             c.text.push('\n');
         }
         "pre" => {
@@ -234,7 +254,7 @@ fn render(n: Node, c: &mut Chapter) {
                 .for_each(|s| c.text.push_str(&s));
             c.text.push('\n');
         }
-        _ => c.render_text(n),
+        _ => c.render_text(n, ea),
     }
 }
 
