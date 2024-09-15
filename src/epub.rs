@@ -5,9 +5,6 @@ use std::{
     fs::File,
     io::{self, Read},
 };
-use image_ascii::TextGenerator;
-use std::io::Cursor;
-use image::io::Reader as ImageReader;
 
 pub struct Chapter {
     pub title: String,
@@ -60,7 +57,11 @@ impl Epub {
             // UnknownEntityReference for HTML entities
             let xml = self.get_text(&format!("{}{}", self.rootdir, path));
             let opt = ParsingOptions { allow_dtd: true };
-            let doc = Document::parse_with_options(&xml, opt).unwrap();
+            let doc = Document::parse_with_options(&xml, opt);
+            let doc = match doc {
+                Ok(v) => v,
+                Err(_e) => continue,
+            };
             let body = doc.root_element().last_element_child().unwrap();
             let state = Attributes::default();
             let mut c = Chapter {
@@ -162,21 +163,21 @@ impl Epub {
 }
 
 impl Chapter {
-    fn render(&mut self, n: Node, open: Attribute, close: Attribute, ea:&mut Epub) {
+    fn render(&mut self, n: Node, open: Attribute, close: Attribute, ea: &mut Epub) {
         self.state.set(open);
         self.attrs.push((self.text.len(), open, self.state));
         self.render_text(n, ea);
         self.state.unset(open);
         self.attrs.push((self.text.len(), close, self.state));
     }
-    fn render_text(&mut self, n: Node, ea:&mut Epub) {
+    fn render_text(&mut self, n: Node, ea: &mut Epub) {
         for child in n.children() {
             render(child, self, ea);
         }
     }
 }
 
-fn render(n: Node, c: &mut Chapter, ea:&mut Epub) {
+fn render(n: Node, c: &mut Chapter, ea: &mut Epub) {
     if n.is_text() {
         let text = n.text().unwrap();
         let content: Vec<_> = text.split_ascii_whitespace().collect();
@@ -201,17 +202,17 @@ fn render(n: Node, c: &mut Chapter, ea:&mut Epub) {
         "img" => {
             match n.attribute("src") {
                 Some(url) => {
-                    c.text.push_str(&format!("\n[IMG][{}]\n",url));
-//                    let mut buffer = Vec::new();
-//                    ea.container.by_name(&format!("{}{}", ea.rootdir, url))
-//                    .unwrap()
-//                    .read_to_end(&mut buffer)
-//                    .unwrap();
-//                    let img = ImageReader::new(Cursor::new(buffer)).with_guessed_format().unwrap().decode().unwrap();
-//                    let result: String = TextGenerator::new(&img).generate();
-//                    c.text.push('\n');
-//                    c.text.push_str(&result);
-//                    c.text.push('\n');
+                    c.text.push_str(&format!("\n[IMG][{}]\n", url));
+                    //                    let mut buffer = Vec::new();
+                    //                    ea.container.by_name(&format!("{}{}", ea.rootdir, url))
+                    //                    .unwrap()
+                    //                    .read_to_end(&mut buffer)
+                    //                    .unwrap();
+                    //                    let img = ImageReader::new(Cursor::new(buffer)).with_guessed_format().unwrap().decode().unwrap();
+                    //                    let result: String = TextGenerator::new(&img).generate();
+                    //                    c.text.push('\n');
+                    //                    c.text.push_str(&result);
+                    //                    c.text.push('\n');
                 }
                 _ => c.text.push_str("\n[IMG]\n"),
             }
@@ -247,8 +248,7 @@ fn render(n: Node, c: &mut Chapter, ea:&mut Epub) {
         }
         "pre" => {
             c.text.push_str("\n  ");
-            n
-                .descendants()
+            n.descendants()
                 .filter(Node::is_text)
                 .map(|n| n.text().unwrap().replace('\n', "\n  "))
                 .for_each(|s| c.text.push_str(&s));
@@ -280,7 +280,7 @@ fn epub2(doc: Document, nav: &mut HashMap<String, String>) {
                 .find(|n| n.has_tag_name("text"))
                 .unwrap()
                 .text()
-                .unwrap()
+                .unwrap_or("")
                 .to_string();
             // TODO subsections
             nav.entry(path).or_insert(text);
