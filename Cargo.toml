@@ -17,6 +17,8 @@ ron = "^0.7"
 roxmltree = "^0.14"
 serde = "^1.0"
 unicode-width = "^0.1"
+viuer = "0.7.1"
+image = "0.24"
 
 [dependencies.zip]
 version = "^0.5"

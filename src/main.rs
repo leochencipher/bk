@@ -10,11 +10,12 @@ use std::{
     cmp::min,
     collections::HashMap,
     env, fs,
-    io::{self, Write},
+    io::{self, Read, Write},
     iter,
     process::exit,
 };
 use unicode_width::UnicodeWidthChar;
+use viuer::Config;
 
 mod view;
 use view::{Page, Toc, View};
@@ -106,6 +107,7 @@ pub struct Bk<'a> {
     dir: Direction,
     meta: Vec<String>,
     query: String,
+    imgs: HashMap<String, Vec<u8>>,
 }
 
 impl Bk<'_> {
@@ -118,6 +120,7 @@ impl Bk<'_> {
             .collect();
 
         let mut chapters = epub.chapters;
+        let imgs = epub.imgs;
         for c in &mut chapters {
             c.lines = wrap(&c.text, width);
             if c.title.chars().count() > width {
@@ -146,6 +149,7 @@ impl Bk<'_> {
             dir: Direction::Next,
             meta,
             query: String::new(),
+            imgs,
         };
 
         bk.jump_byte(args.chapter, args.byte);
@@ -171,8 +175,32 @@ impl Bk<'_> {
                 terminal::Clear(terminal::ClearType::All),
             )
             .unwrap();
+            let mut skip = 0;
             for (i, line) in bk.view.render(bk).iter().enumerate() {
-                queue!(stdout, cursor::MoveTo(bk.pad(), i as u16), Print(line)).unwrap();
+                if !line.starts_with("[IMG][") {
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(bk.pad(), (i + skip) as u16),
+                        Print(line)
+                    )
+                    .unwrap();
+                } else {
+                    let url = &line[6..(line.len() - 1)];
+                    let conf = Config {
+                        // set offset
+                        x: bk.pad(),
+                        y: (i + skip) as i16,
+                        // set dimensions
+                        width: Some(40),
+                        ..Default::default()
+                    };
+                    let buf = bk.imgs.get(url).unwrap();
+                    let img = image::load_from_memory(&buf)
+                        .expect("Data from stdin could not be decoded.");
+                    let (_print_width, print_height) =
+                        viuer::print(&img, &conf).expect("Image printing failed.");
+                    skip = skip + (print_height) as usize;
+                }
             }
             queue!(stdout, cursor::MoveTo(bk.pad(), bk.cursor as u16)).unwrap();
             stdout.flush().unwrap();
@@ -242,6 +270,7 @@ impl Bk<'_> {
     fn pad(&self) -> u16 {
         self.cols.saturating_sub(self.max_width) / 2
     }
+
     fn search(&mut self, args: SearchArgs) -> bool {
         let (start, end) = self.chapters[self.chapter].lines[self.line];
         match args.dir {

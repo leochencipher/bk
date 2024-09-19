@@ -24,6 +24,7 @@ pub struct Epub {
     pub chapters: Vec<Chapter>,
     pub links: HashMap<String, (usize, usize)>,
     pub meta: String,
+    pub imgs: HashMap<String, Vec<u8>>,
 }
 
 impl Epub {
@@ -35,6 +36,7 @@ impl Epub {
             chapters: Vec::new(),
             links: HashMap::new(),
             meta: String::new(),
+            imgs: HashMap::new(),
         };
         let chapters = epub.get_spine();
         if !meta {
@@ -55,7 +57,9 @@ impl Epub {
         for (title, path) in spine {
             // https://github.com/RazrFalcon/roxmltree/issues/12
             // UnknownEntityReference for HTML entities
-            let xml = self.get_text(&format!("{}{}", self.rootdir, path));
+            let cpath = format!("{}{}", self.rootdir, path);
+            let xml = self.get_text(&cpath);
+            let (chapterpath, _) = cpath.rsplit_once('/').unwrap_or(("", ""));
             let opt = ParsingOptions { allow_dtd: true };
             let doc = Document::parse_with_options(&xml, opt);
             let doc = match doc {
@@ -73,7 +77,7 @@ impl Epub {
                 links: Vec::new(),
                 frag: Vec::new(),
             };
-            render(body, &mut c, self);
+            render(body, &mut c, self, chapterpath);
             if c.text.trim().is_empty() {
                 continue;
             }
@@ -163,21 +167,28 @@ impl Epub {
 }
 
 impl Chapter {
-    fn render(&mut self, n: Node, open: Attribute, close: Attribute, ea: &mut Epub) {
+    fn render(
+        &mut self,
+        n: Node,
+        open: Attribute,
+        close: Attribute,
+        ea: &mut Epub,
+        chapterpath: &str,
+    ) {
         self.state.set(open);
         self.attrs.push((self.text.len(), open, self.state));
-        self.render_text(n, ea);
+        self.render_text(n, ea, chapterpath);
         self.state.unset(open);
         self.attrs.push((self.text.len(), close, self.state));
     }
-    fn render_text(&mut self, n: Node, ea: &mut Epub) {
+    fn render_text(&mut self, n: Node, ea: &mut Epub, chapterpath: &str) {
         for child in n.children() {
-            render(child, self, ea);
+            render(child, self, ea, chapterpath);
         }
     }
 }
 
-fn render(n: Node, c: &mut Chapter, ea: &mut Epub) {
+fn render(n: Node, c: &mut Chapter, ea: &mut Epub, chapterpath: &str) {
     if n.is_text() {
         let text = n.text().unwrap();
         let content: Vec<_> = text.split_ascii_whitespace().collect();
@@ -199,51 +210,69 @@ fn render(n: Node, c: &mut Chapter, ea: &mut Epub) {
     match n.tag_name().name() {
         "br" => c.text.push('\n'),
         "hr" => c.text.push_str("\n* * *\n"),
-        "img" => {
-            match n.attribute("src") {
-                Some(url) => {
-                    c.text.push_str(&format!("\n[IMG][{}]\n", url));
-                    //                    let mut buffer = Vec::new();
-                    //                    ea.container.by_name(&format!("{}{}", ea.rootdir, url))
-                    //                    .unwrap()
-                    //                    .read_to_end(&mut buffer)
-                    //                    .unwrap();
-                    //                    let img = ImageReader::new(Cursor::new(buffer)).with_guessed_format().unwrap().decode().unwrap();
-                    //                    let result: String = TextGenerator::new(&img).generate();
-                    //                    c.text.push('\n');
-                    //                    c.text.push_str(&result);
-                    //                    c.text.push('\n');
-                }
-                _ => c.text.push_str("\n[IMG]\n"),
+        "img" => match n.attribute("src") {
+            Some(url) => {
+                c.text.push_str(&format!("\n[IMG][{}]\n", url));
+                let imgpath = if url.starts_with("../") {
+                    &url[3..]
+                } else {
+                    &url
+                };
+                let mut buffer = Vec::new();
+                ea.container
+                    .by_name(imgpath)
+                    .unwrap()
+                    .read_to_end(&mut buffer)
+                    .unwrap();
+                ea.imgs.insert(String::from(url), buffer);
             }
-        }
+            _ => c.text.push_str("\n[IMG_MISSING]\n"),
+        },
         "a" => {
             match n.attribute("href") {
                 // TODO open external urls in browser
                 Some(url) if !url.starts_with("http") => {
                     let start = c.text.len();
-                    c.render(n, Attribute::Underlined, Attribute::NoUnderline, ea);
+                    c.render(
+                        n,
+                        Attribute::Underlined,
+                        Attribute::NoUnderline,
+                        ea,
+                        chapterpath,
+                    );
                     c.links.push((start, c.text.len(), url.to_string()));
                 }
-                _ => c.render_text(n, ea),
+                _ => c.render_text(n, ea, chapterpath),
             }
         }
-        "em" => c.render(n, Attribute::Italic, Attribute::NoItalic, ea),
-        "strong" => c.render(n, Attribute::Bold, Attribute::NormalIntensity, ea),
+        "em" => c.render(n, Attribute::Italic, Attribute::NoItalic, ea, chapterpath),
+        "strong" => c.render(
+            n,
+            Attribute::Bold,
+            Attribute::NormalIntensity,
+            ea,
+            chapterpath,
+        ),
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
             c.text.push_str(" ");
-            c.render(n, Attribute::Bold, Attribute::NormalIntensity, ea);
+            c.render(
+                n,
+                Attribute::Bold,
+                Attribute::NormalIntensity,
+                ea,
+                chapterpath,
+            );
             c.text.push_str("\n--------------\n");
         }
         "blockquote" | "div" | "p" | "tr" => {
             // TODO compress newlines
             c.text.push('\n');
-            c.render_text(n, ea);
+            c.render_text(n, ea, chapterpath);
             c.text.push('\n');
         }
         "li" => {
             c.text.push_str("\n ");
-            c.render_text(n, ea);
+            c.render_text(n, ea, chapterpath);
             c.text.push('\n');
         }
         "pre" => {
@@ -254,7 +283,7 @@ fn render(n: Node, c: &mut Chapter, ea: &mut Epub) {
                 .for_each(|s| c.text.push_str(&s));
             c.text.push('\n');
         }
-        _ => c.render_text(n, ea),
+        _ => c.render_text(n, ea, chapterpath),
     }
 }
 
