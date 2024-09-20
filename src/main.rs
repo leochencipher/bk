@@ -10,7 +10,7 @@ use std::{
     cmp::min,
     collections::HashMap,
     env, fs,
-    io::{self, Read, Write},
+    io::{self, Write},
     iter,
     process::exit,
 };
@@ -186,17 +186,17 @@ impl Bk<'_> {
                     .unwrap();
                 } else {
                     let url = &line[6..(line.len() - 1)];
+                    let buf = bk.imgs.get(url).unwrap();
+                    let img = image::load_from_memory(&buf)
+                        .expect("Data from stdin could not be decoded.");
                     let conf = Config {
                         // set offset
                         x: bk.pad(),
                         y: (i + skip) as i16,
                         // set dimensions
-                        width: Some(40),
+                        width: Some(min(img.width() / 12, bk.max_width as u32)),
                         ..Default::default()
                     };
-                    let buf = bk.imgs.get(url).unwrap();
-                    let img = image::load_from_memory(&buf)
-                        .expect("Data from stdin could not be decoded.");
                     let (_print_width, print_height) =
                         viuer::print(&img, &conf).expect("Image printing failed.");
                     skip = skip + (print_height) as usize;

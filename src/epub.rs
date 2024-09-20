@@ -213,14 +213,25 @@ fn render(n: Node, c: &mut Chapter, ea: &mut Epub, chapterpath: &str) {
         "img" => match n.attribute("src") {
             Some(url) => {
                 c.text.push_str(&format!("\n[IMG][{}]\n", url));
-                let imgpath = if url.starts_with("../") {
-                    &url[3..]
-                } else {
-                    &url
-                };
+                let mut ipath: Vec<&str> = Vec::new();
+                let psplit = &format!("{}/{}", chapterpath, url);
+                psplit.split('/').for_each(|comp| {
+                    match comp {
+                        "" => (),
+                        "." => (),
+                        ".." => {
+                            ipath.pop();
+                            ();
+                        }
+                        pcomp => {
+                            ipath.push(pcomp);
+                            ();
+                        }
+                    };
+                });
                 let mut buffer = Vec::new();
                 ea.container
-                    .by_name(imgpath)
+                    .by_name(ipath.join("/").as_str())
                     .unwrap()
                     .read_to_end(&mut buffer)
                     .unwrap();
