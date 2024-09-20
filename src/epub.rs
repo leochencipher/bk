@@ -212,7 +212,6 @@ fn render(n: Node, c: &mut Chapter, ea: &mut Epub, chapterpath: &str) {
         "hr" => c.text.push_str("\n* * *\n"),
         "img" => match n.attribute("src") {
             Some(url) => {
-                c.text.push_str(&format!("\n[IMG][{}]\n", url));
                 let mut ipath: Vec<&str> = Vec::new();
                 let psplit = &format!("{}/{}", chapterpath, url);
                 psplit.split('/').for_each(|comp| {
@@ -230,12 +229,14 @@ fn render(n: Node, c: &mut Chapter, ea: &mut Epub, chapterpath: &str) {
                     };
                 });
                 let mut buffer = Vec::new();
-                ea.container
-                    .by_name(ipath.join("/").as_str())
-                    .unwrap()
-                    .read_to_end(&mut buffer)
-                    .unwrap();
-                ea.imgs.insert(String::from(url), buffer);
+                match ea.container.by_name(ipath.join("/").as_str()) {
+                    Ok(mut f) => {
+                        f.read_to_end(&mut buffer).unwrap();
+                        ea.imgs.insert(String::from(url), buffer);
+                        c.text.push_str(&format!("\n[IMG][{}]\n", url));
+                    }
+                    Err(_) => c.text.push_str("\n[IMG_MISSING]\n"),
+                }
             }
             _ => c.text.push_str("\n[IMG_MISSING]\n"),
         },

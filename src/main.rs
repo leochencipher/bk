@@ -5,6 +5,7 @@ use crossterm::{
     style::{self, Color::Rgb, Colors, Print, SetColors},
     terminal,
 };
+use image::GenericImageView;
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::min,
@@ -194,7 +195,8 @@ impl Bk<'_> {
                         x: bk.pad(),
                         y: (i + skip) as i16,
                         // set dimensions
-                        width: Some(min(img.width() / 12, bk.max_width as u32)),
+                        width: Some(min(img.width() / 10, bk.max_width as u32)),
+                        height: Some(min(img.height() / 10, bk.rows as u32)),
                         ..Default::default()
                     };
                     let (_print_width, print_height) =
