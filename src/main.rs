@@ -8,7 +8,7 @@ use crossterm::{
 use image::GenericImageView;
 use serde::{Deserialize, Serialize};
 use std::{
-    cmp::min,
+    cmp::{max, min},
     collections::HashMap,
     env, fs,
     io::{self, Write},
@@ -190,13 +190,22 @@ impl Bk<'_> {
                     let buf = bk.imgs.get(url).unwrap();
                     let img = image::load_from_memory(&buf)
                         .expect("Data from stdin could not be decoded.");
+                    let mut optwidth = img.width() / 10;
+                    let ratio = 2;
+                    if (img.width() / 10) > bk.max_width as u32 {
+                        optwidth = bk.max_width as u32;
+                        if img.height() / (img.width() / bk.max_width as u32) / ratio
+                            > bk.rows as u32
+                        {
+                            optwidth = img.width() / (img.height() / bk.rows as u32 / ratio);
+                        }
+                    }
                     let conf = Config {
                         // set offset
                         x: bk.pad(),
                         y: (i + skip) as i16,
                         // set dimensions
-                        width: Some(min(img.width() / 10, bk.max_width as u32)),
-                        height: Some(min(img.height() / 10, bk.rows as u32)),
+                        width: Some(optwidth),
                         ..Default::default()
                     };
                     let (_print_width, print_height) =
