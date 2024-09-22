@@ -5,10 +5,9 @@ use crossterm::{
     style::{self, Color::Rgb, Colors, Print, SetColors},
     terminal,
 };
-use image::GenericImageView;
 use serde::{Deserialize, Serialize};
 use std::{
-    cmp::{max, min},
+    cmp::min,
     collections::HashMap,
     env, fs,
     io::{self, Write},
@@ -178,6 +177,9 @@ impl Bk<'_> {
             .unwrap();
             let mut skip = 0;
             for (i, line) in bk.view.render(bk).iter().enumerate() {
+                if (skip + i) > bk.rows {
+                    continue;
+                }
                 if !line.starts_with("[IMG][") {
                     queue!(
                         stdout,
@@ -191,13 +193,14 @@ impl Bk<'_> {
                     let img = image::load_from_memory(&buf)
                         .expect("Data from stdin could not be decoded.");
                     let mut optwidth = img.width() / 10;
-                    let ratio = 2;
+                    let ratio = 1.8;
                     if (img.width() / 10) > bk.max_width as u32 {
                         optwidth = bk.max_width as u32;
-                        if img.height() / (img.width() / bk.max_width as u32) / ratio
-                            > bk.rows as u32
+                        if (img.height() / (img.width() / bk.max_width as u32)) as f64 / ratio
+                            > bk.rows as f64
                         {
-                            optwidth = img.width() / (img.height() / bk.rows as u32 / ratio);
+                            optwidth =
+                                img.width() / (img.height() as f64 / bk.rows as f64 / ratio) as u32;
                         }
                     }
                     let conf = Config {
