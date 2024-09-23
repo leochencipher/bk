@@ -2,7 +2,11 @@ use crossterm::{
     cursor,
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
     queue,
-    style::{self, Color::Rgb, Colors, Print, SetColors},
+    style::{
+        self,
+        Color::{self, Rgb},
+        Colors, Print, ResetColor, SetColors,
+    },
     terminal,
 };
 use serde::{Deserialize, Serialize};
@@ -177,7 +181,29 @@ impl Bk<'_> {
             .unwrap();
             for (i, line) in bk.view.render(bk).iter().enumerate() {
                 if !line.starts_with("[IMG][") {
-                    queue!(stdout, cursor::MoveTo(5, i as u16), Print(line)).unwrap();
+                    if line.starts_with(" ") {
+                        queue!(
+                            stdout,
+                            cursor::MoveTo(5, i as u16),
+                            SetColors(Colors::new(
+                                Color::Rgb {
+                                    r: 250,
+                                    g: 179,
+                                    b: 135
+                                },
+                                Color::Rgb {
+                                    r: 49,
+                                    g: 50,
+                                    b: 68
+                                }
+                            )),
+                            Print(&line[3..]),
+                            ResetColor
+                        )
+                        .unwrap();
+                    } else {
+                        queue!(stdout, cursor::MoveTo(5, i as u16), Print(line)).unwrap();
+                    }
                 } else {
                     //queue!(stdout, cursor::MoveTo(5, i as u16), Print(line)).unwrap();
                     let url = &line[6..(line.len() - 1)];

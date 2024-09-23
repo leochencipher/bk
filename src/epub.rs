@@ -274,7 +274,7 @@ fn render(n: Node, c: &mut Chapter, ea: &mut Epub, chapterpath: &str) {
                 ea,
                 chapterpath,
             );
-            c.text.push_str("\n--------------\n");
+            c.text.push_str("\n\n");
         }
         "blockquote" | "div" | "p" | "tr" => {
             // TODO compress newlines
