@@ -2,14 +2,18 @@ use crossterm::{
     cursor,
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
     queue,
-    style::{self, Color::Rgb, Colors, Print, SetColors},
+    style::{
+        self,
+        Color::{self, Rgb},
+        Colors, Print, ResetColor, SetColors,
+    },
     terminal,
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    cmp::min,
+    cmp::{max, min},
     collections::HashMap,
-    env, fs,
+    env, fs, i16,
     io::{self, Write},
     iter,
     process::exit,
@@ -175,48 +179,65 @@ impl Bk<'_> {
                 terminal::Clear(terminal::ClearType::All),
             )
             .unwrap();
-            let mut skip = 0;
+            let mut img_index = 1;
+            let mut last_y: i16 = 0;
             for (i, line) in bk.view.render(bk).iter().enumerate() {
-                if (skip + i) > bk.rows {
-                    continue;
-                }
                 if !line.starts_with("[IMG][") {
+                    if line.starts_with(" ") {
+                        queue!(
+                            stdout,
+                            cursor::MoveTo(5, i as u16),
+                            SetColors(Colors::new(
+                                Color::Rgb {
+                                    r: 250,
+                                    g: 179,
+                                    b: 135
+                                },
+                                Color::Rgb {
+                                    r: 49,
+                                    g: 50,
+                                    b: 68
+                                }
+                            )),
+                            Print(format!("{: <110}", &line[3..])),
+                            ResetColor
+                        )
+                        .unwrap();
+                    } else {
+                        queue!(stdout, cursor::MoveTo(5, i as u16), Print(line)).unwrap();
+                    }
+                } else {
                     queue!(
                         stdout,
-                        cursor::MoveTo(bk.pad(), (i + skip) as u16),
-                        Print(line)
+                        cursor::MoveTo(5, i as u16),
+                        Print(format!("[{}]", img_index))
                     )
                     .unwrap();
-                } else {
                     let url = &line[6..(line.len() - 1)];
                     let buf = bk.imgs.get(url).unwrap();
                     let img = image::load_from_memory(&buf)
                         .expect("Data from stdin could not be decoded.");
-                    let mut optwidth = img.width() / 10;
-                    let ratio = 1.8;
-                    if (img.width() / 10) > bk.max_width as u32 {
-                        optwidth = bk.max_width as u32;
-                        if (img.height() / (img.width() / bk.max_width as u32)) as f64 / ratio
-                            > bk.rows as f64
-                        {
-                            optwidth =
-                                img.width() / (img.height() as f64 / bk.rows as f64 / ratio) as u32;
-                        }
-                    }
                     let conf = Config {
                         // set offset
-                        x: bk.pad(),
-                        y: (i + skip) as i16,
+                        x: bk.max_width + 10,
+                        y: max(i as i16, last_y + 1),
                         // set dimensions
-                        width: Some(optwidth),
+                        width: Some(min(img.width() / 8, (2 * bk.pad() - 10) as u32)),
                         ..Default::default()
                     };
                     let (_print_width, print_height) =
                         viuer::print(&img, &conf).expect("Image printing failed.");
-                    skip = skip + (print_height) as usize;
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(bk.max_width + 7, max(i as u16, last_y as u16 + 1)),
+                        Print(format!("[{}]", img_index))
+                    )
+                    .unwrap();
+                    img_index = img_index + 1;
+                    last_y = i as i16 + print_height as i16;
                 }
             }
-            queue!(stdout, cursor::MoveTo(bk.pad(), bk.cursor as u16)).unwrap();
+            queue!(stdout, cursor::MoveTo(5, bk.cursor as u16)).unwrap();
             stdout.flush().unwrap();
         };
 

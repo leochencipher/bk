@@ -266,7 +266,7 @@ fn render(n: Node, c: &mut Chapter, ea: &mut Epub, chapterpath: &str) {
             chapterpath,
         ),
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
-            c.text.push_str(" ");
+            c.text.push_str("\n ");
             c.render(
                 n,
                 Attribute::Bold,
@@ -274,7 +274,7 @@ fn render(n: Node, c: &mut Chapter, ea: &mut Epub, chapterpath: &str) {
                 ea,
                 chapterpath,
             );
-            c.text.push_str("\n--------------\n");
+            c.text.push_str("\n\n");
         }
         "blockquote" | "div" | "p" | "tr" => {
             // TODO compress newlines
