@@ -11,9 +11,9 @@ use crossterm::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    cmp::min,
+    cmp::{max, min},
     collections::HashMap,
-    env, fs,
+    env, fs, i16,
     io::{self, Write},
     iter,
     process::exit,
@@ -179,6 +179,8 @@ impl Bk<'_> {
                 terminal::Clear(terminal::ClearType::All),
             )
             .unwrap();
+            let mut img_index = 1;
+            let mut last_y: i16 = 0;
             for (i, line) in bk.view.render(bk).iter().enumerate() {
                 if !line.starts_with("[IMG][") {
                     if line.starts_with(" ") {
@@ -197,7 +199,7 @@ impl Bk<'_> {
                                     b: 68
                                 }
                             )),
-                            Print(&line[3..]),
+                            Print(format!("{: <110}", &line[3..])),
                             ResetColor
                         )
                         .unwrap();
@@ -205,7 +207,12 @@ impl Bk<'_> {
                         queue!(stdout, cursor::MoveTo(5, i as u16), Print(line)).unwrap();
                     }
                 } else {
-                    //queue!(stdout, cursor::MoveTo(5, i as u16), Print(line)).unwrap();
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(5, i as u16),
+                        Print(format!("[{}]", img_index))
+                    )
+                    .unwrap();
                     let url = &line[6..(line.len() - 1)];
                     let buf = bk.imgs.get(url).unwrap();
                     let img = image::load_from_memory(&buf)
@@ -213,13 +220,21 @@ impl Bk<'_> {
                     let conf = Config {
                         // set offset
                         x: bk.max_width + 10,
-                        y: i as i16,
+                        y: max(i as i16, last_y + 1),
                         // set dimensions
-                        width: Some(min(img.width() / 8, 2 * bk.pad() as u32)),
+                        width: Some(min(img.width() / 8, (2 * bk.pad() - 10) as u32)),
                         ..Default::default()
                     };
-                    let (_print_width, _print_height) =
+                    let (_print_width, print_height) =
                         viuer::print(&img, &conf).expect("Image printing failed.");
+                    queue!(
+                        stdout,
+                        cursor::MoveTo(bk.max_width + 7, max(i as u16, last_y as u16 + 1)),
+                        Print(format!("[{}]", img_index))
+                    )
+                    .unwrap();
+                    img_index = img_index + 1;
+                    last_y = i as i16 + print_height as i16;
                 }
             }
             queue!(stdout, cursor::MoveTo(5, bk.cursor as u16)).unwrap();
