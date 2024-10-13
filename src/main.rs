@@ -17,8 +17,9 @@ use std::{
     io::{self, Write},
     iter,
     process::exit,
+    u16,
 };
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use viuer::Config;
 
 mod view;
@@ -183,6 +184,7 @@ impl Bk<'_> {
             let mut last_y: i16 = 0;
             for (i, line) in bk.view.render(bk).iter().enumerate() {
                 if !line.starts_with("[IMG][") {
+                    let curlen = line.width();
                     if line.starts_with(" ") {
                         queue!(
                             stdout,
@@ -199,7 +201,11 @@ impl Bk<'_> {
                                     b: 68
                                 }
                             )),
-                            Print(format!("{: <110}", &line[3..])),
+                            Print(format!(
+                                "{}{}",
+                                &line[3..],
+                                " ".repeat(bk.max_width as usize - curlen + 3)
+                            )),
                             ResetColor
                         )
                         .unwrap();
@@ -220,7 +226,7 @@ impl Bk<'_> {
                     let conf = Config {
                         // set offset
                         x: bk.max_width + 10,
-                        y: max(i as i16, last_y + 1),
+                        y: max(i as i16, last_y),
                         // set dimensions
                         width: Some(min(img.width() / 8, (2 * bk.pad() - 10) as u32)),
                         ..Default::default()
@@ -229,12 +235,12 @@ impl Bk<'_> {
                         viuer::print(&img, &conf).expect("Image printing failed.");
                     queue!(
                         stdout,
-                        cursor::MoveTo(bk.max_width + 7, max(i as u16, last_y as u16 + 1)),
+                        cursor::MoveTo(bk.max_width + 7, max(i as u16, last_y as u16)),
                         Print(format!("[{}]", img_index))
                     )
                     .unwrap();
                     img_index = img_index + 1;
-                    last_y = i as i16 + print_height as i16;
+                    last_y = i as i16 + print_height as i16 + 2;
                 }
             }
             queue!(stdout, cursor::MoveTo(5, bk.cursor as u16)).unwrap();
