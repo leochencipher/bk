@@ -9,6 +9,7 @@ use crossterm::{
     },
     terminal,
 };
+use image::GenericImageView;
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::{max, min},
@@ -17,7 +18,7 @@ use std::{
     io::{self, Write},
     iter,
     process::exit,
-    u16,
+    u16, u32,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use viuer::Config;
@@ -223,14 +224,32 @@ impl Bk<'_> {
                     let buf = bk.imgs.get(url).unwrap();
                     let img = image::load_from_memory(&buf)
                         .expect("Data from stdin could not be decoded.");
-                    let conf = Config {
-                        // set offset
-                        x: bk.max_width + 10,
-                        y: max(i as i16, last_y),
-                        // set dimensions
-                        width: Some(min(img.width() / 8, (2 * bk.pad() - 10) as u32)),
-                        ..Default::default()
-                    };
+                    // check if the print image trigger's scroll
+                    let mut conf;
+                    if (img.width() / 8 / (2 * bk.pad() as u32 - 10))
+                        > (img.height() / 2 / 8 / (bk.rows as u32 - max(i as u32, last_y as u32)))
+                    {
+                        conf = Config {
+                            // set offset
+                            x: bk.max_width + 10,
+                            y: max(i as i16, last_y),
+                            // set dimensions
+                            width: Some(min(img.width() / 8, (2 * bk.pad() - 10) as u32)),
+                            ..Default::default()
+                        };
+                    } else {
+                        conf = Config {
+                            // set offset
+                            x: bk.max_width + 10,
+                            y: max(i as i16, last_y),
+                            // set dimensions
+                            height: Some(min(
+                                img.height() / 2 / 8,
+                                bk.rows as u32 - max(i as u32, last_y as u32),
+                            )),
+                            ..Default::default()
+                        };
+                    }
                     let (_print_width, print_height) =
                         viuer::print(&img, &conf).expect("Image printing failed.");
                     queue!(
