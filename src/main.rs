@@ -62,6 +62,11 @@ fn wrap(text: &str, max_cols: usize) -> Vec<(usize, usize)> {
                 end = i + c.len_utf8();
                 space = false;
             }
+            x if !x.is_ascii() && cols <= max_cols => {
+                after = 0;
+                end = i + c.len_utf8();
+                space = false;
+            }
             _ => after += char_cols,
         }
         if cols > max_cols {
@@ -182,10 +187,10 @@ impl Bk<'_> {
             )
             .unwrap();
             let mut img_index = 1;
-            let mut last_y: i16 = 0;
+            let mut last_y: i16 = 5;
             for (i, line) in bk.view.render(bk).iter().enumerate() {
                 if !line.starts_with("[IMG][") {
-                    let curlen = line.width();
+                    let curlen = line.width_cjk();
                     if line.starts_with(" ") {
                         queue!(
                             stdout,
@@ -205,7 +210,7 @@ impl Bk<'_> {
                             Print(format!(
                                 "{}{}",
                                 &line[3..],
-                                " ".repeat(bk.max_width as usize - curlen + 3)
+                                " ".repeat(bk.max_width as usize - curlen + 11)
                             )),
                             ResetColor
                         )
@@ -227,12 +232,12 @@ impl Bk<'_> {
                     // check if the print image trigger's scroll
                     let mut conf;
                     if (img.width() / 8 / (2 * bk.pad() as u32 - 10))
-                        > (img.height() / 2 / 8 / (bk.rows as u32 - max(i as u32, last_y as u32)))
+                        > (img.height() / 2 / 8 / (bk.rows as u32 - last_y as u32))
                     {
                         conf = Config {
                             // set offset
                             x: bk.max_width + 10,
-                            y: max(i as i16, last_y),
+                            y: last_y,
                             // set dimensions
                             width: Some(min(img.width() / 8, (2 * bk.pad() - 10) as u32)),
                             ..Default::default()
@@ -241,12 +246,9 @@ impl Bk<'_> {
                         conf = Config {
                             // set offset
                             x: bk.max_width + 10,
-                            y: max(i as i16, last_y),
+                            y: last_y,
                             // set dimensions
-                            height: Some(min(
-                                img.height() / 2 / 8,
-                                bk.rows as u32 - max(i as u32, last_y as u32),
-                            )),
+                            height: Some(min(img.height() / 2 / 8, bk.rows as u32 - last_y as u32)),
                             ..Default::default()
                         };
                     }
@@ -254,12 +256,12 @@ impl Bk<'_> {
                         viuer::print(&img, &conf).expect("Image printing failed.");
                     queue!(
                         stdout,
-                        cursor::MoveTo(bk.max_width + 7, max(i as u16, last_y as u16)),
+                        cursor::MoveTo(bk.max_width + 7, last_y as u16),
                         Print(format!("[{}]", img_index))
                     )
                     .unwrap();
                     img_index = img_index + 1;
-                    last_y = i as i16 + print_height as i16 + 2;
+                    last_y = last_y + print_height as i16 + 2;
                 }
             }
             queue!(stdout, cursor::MoveTo(5, bk.cursor as u16)).unwrap();
