@@ -20,8 +20,9 @@ ron = "^0.7"
 roxmltree = "^0.14"
 serde = "^1.0"
 unicode-width = "^0.2"
-viuer = "^0.7.1"
+viuer = {version = "^0.7.1", features=["sixel"]}
 image = "^0.24"
+clipboard = "0.5.0"
 
 [dependencies.zip]
 version = "^0.6.6"

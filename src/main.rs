@@ -231,15 +231,16 @@ impl Bk<'_> {
                         .expect("Data from stdin could not be decoded.");
                     // check if the print image trigger's scroll
                     let mut conf;
-                    if (img.width() / 8 / (2 * bk.pad() as u32 - 10))
-                        > (img.height() / 2 / 8 / (bk.rows as u32 - last_y as u32))
+                    let ratio: u32 = 2;
+                    if (img.width() / ratio / (2 * bk.pad() as u32 - 10))
+                        > (img.height() / 2 / ratio / (bk.rows as u32 - last_y as u32))
                     {
                         conf = Config {
                             // set offset
                             x: bk.max_width + 10,
                             y: last_y,
                             // set dimensions
-                            width: Some(min(img.width() / 8, (2 * bk.pad() - 10) as u32)),
+                            width: Some(min(img.width() / ratio, (2 * bk.pad() - 10) as u32)),
                             ..Default::default()
                         };
                     } else {
@@ -248,7 +249,10 @@ impl Bk<'_> {
                             x: bk.max_width + 10,
                             y: last_y,
                             // set dimensions
-                            height: Some(min(img.height() / 2 / 8, bk.rows as u32 - last_y as u32)),
+                            height: Some(min(
+                                img.height() / 2 / ratio,
+                                bk.rows as u32 - last_y as u32,
+                            )),
                             ..Default::default()
                         };
                     }

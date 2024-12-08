@@ -9,6 +9,8 @@ use std::cmp::{min, Ordering};
 use unicode_width::UnicodeWidthChar;
 
 use crate::{Bk, Direction, SearchArgs};
+use clipboard::ClipboardContext;
+use clipboard::ClipboardProvider;
 
 pub trait View {
     fn render(&self, bk: &Bk) -> Vec<String>;
@@ -209,11 +211,11 @@ impl Page {
         let c = &bk.chapters[bk.chapter];
         let line = bk.line + e.row as usize;
 
-        if e.column < bk.pad() || line >= c.lines.len() {
+        if line >= c.lines.len() {
             return;
         }
         let (start, end) = c.lines[line];
-        let line_col = (e.column - bk.pad()) as usize;
+        let line_col = (e.column - 5) as usize;
 
         let mut cols = 0;
         let mut found = false;
@@ -226,10 +228,41 @@ impl Page {
                 break;
             }
         }
-
+        println!("click found? {}", found);
         if !found {
             return;
         }
+        // Extract the word that was clicked
+        let mut word_start = byte;
+        let mut word_end = byte;
+
+        // Find the start of the word
+        while word_start > start
+            && !c.text[word_start - 1..word_start]
+                .chars()
+                .next()
+                .unwrap()
+                .is_whitespace()
+        {
+            word_start -= 1;
+        }
+
+        // Find the end of the word
+        while word_end < end
+            && !c.text[word_end..word_end + 1]
+                .chars()
+                .next()
+                .unwrap()
+                .is_whitespace()
+        {
+            word_end += 1;
+        }
+
+        let clicked_word = &c.text[word_start..word_end];
+        println!("[{}]", clicked_word.to_string());
+        // Copy the word to the clipboard
+        let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
+        ctx.set_contents(clicked_word.to_string()).unwrap();
 
         let r = c.links.binary_search_by(|&(start, end, _)| {
             if start > byte {
