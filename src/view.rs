@@ -228,38 +228,53 @@ impl Page {
                 break;
             }
         }
-        println!("click found? {}", found);
         if !found {
             return;
         }
-        // Extract the word that was clicked
-        let mut word_start = byte;
-        let mut word_end = byte;
 
-        // Find the start of the word
-        while word_start > start
-            && !c.text[word_start - 1..word_start]
-                .chars()
-                .next()
-                .unwrap()
-                .is_whitespace()
-        {
-            word_start -= 1;
-        }
+        // Check if the clicked character is CJK
+        let is_cjk = c.text[byte..]
+            .chars()
+            .next()
+            .map(|ch| {
+                (ch as u32 >= 0x4E00 && ch as u32 <= 0x9FFF) || // CJK Unified Ideographs
+                (ch as u32 >= 0x3040 && ch as u32 <= 0x30FF) || // Hiragana and Katakana
+                (ch as u32 >= 0xAC00 && ch as u32 <= 0xD7AF)    // Hangul Syllables
+            })
+            .unwrap_or(false);
 
-        // Find the end of the word
-        while word_end < end
-            && !c.text[word_end..word_end + 1]
-                .chars()
-                .next()
-                .unwrap()
-                .is_whitespace()
-        {
-            word_end += 1;
-        }
+        let (word_start, word_end) = if is_cjk {
+            (byte, byte + c.text[byte..].chars().next().unwrap().len_utf8())
+        } else {
+            let mut word_start = byte;
+            let mut word_end = byte;
+
+            // Find the start of the word
+            while word_start > start
+                && !c.text[word_start - 1..word_start]
+                    .chars()
+                    .next()
+                    .unwrap()
+                    .is_whitespace()
+            {
+                word_start -= 1;
+            }
+
+            // Find the end of the word
+            while word_end < end
+                && !c.text[word_end..word_end + 1]
+                    .chars()
+                    .next()
+                    .unwrap()
+                    .is_whitespace()
+            {
+                word_end += 1;
+            }
+
+            (word_start, word_end)
+        };
 
         let clicked_word = &c.text[word_start..word_end];
-        println!("[{}]", clicked_word.to_string());
         // Copy the word to the clipboard
         let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
         ctx.set_contents(clicked_word.to_string()).unwrap();
