@@ -23,6 +23,8 @@ unicode-width = "^0.2"
 viuer = { version = "^0.7.1" }
 image = "^0.24"
 clipboard = "0.5.0"
+notify-rust = "4.11.4"
+webster = "0.3.0"
 
 [dependencies.zip]
 version = "^0.6.6"

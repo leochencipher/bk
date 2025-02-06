@@ -11,6 +11,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::{Bk, Direction, SearchArgs};
 use clipboard::ClipboardContext;
 use clipboard::ClipboardProvider;
+use notify_rust::Notification;
 
 pub trait View {
     fn render(&self, bk: &Bk) -> Vec<String>;
@@ -262,11 +263,10 @@ impl Page {
 
             // Find the end of the word
             while word_end < end
-                && !c.text[word_end..word_end + 1]
-                    .chars()
-                    .next()
-                    .unwrap()
-                    .is_whitespace()
+                && !matches!(
+                    c.text[word_end..word_end + 1].chars().next().unwrap(),
+                    ' ' | ',' | '.' | '?' | '!' | ';' | ':' | '"' | ')' | ']' | '}'
+                )
             {
                 word_end += 1;
             }
@@ -275,6 +275,14 @@ impl Page {
         };
 
         let clicked_word = &c.text[word_start..word_end];
+        if let Some(definition) = webster::dictionary(&clicked_word.to_lowercase()) {
+            Notification::new()
+                .summary(clicked_word)
+                .body(definition)
+                .icon("Dictionary")
+                .show()
+                .unwrap();
+        }
         // Copy the word to the clipboard
         let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
         ctx.set_contents(clicked_word.to_string()).unwrap();
