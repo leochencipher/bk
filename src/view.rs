@@ -252,22 +252,17 @@ impl Page {
 
             // Find the start of the word
             while word_start > start
-                && !c.text[word_start - 1..word_start]
+                && c.text[word_start - 1..word_start]
                     .chars()
                     .next()
                     .unwrap()
-                    .is_whitespace()
+                    .is_ascii_alphabetic()
             {
                 word_start -= 1;
             }
 
             // Find the end of the word
-            while word_end < end
-                && !matches!(
-                    c.text[word_end..word_end + 1].chars().next().unwrap(),
-                    ' ' | ',' | '.' | '?' | '!' | ';' | ':' | '"' | ')' | ']' | '}'
-                )
-            {
+            while word_end < end && c.text[word_end..].chars().next().unwrap().is_ascii_alphabetic() {
                 word_end += 1;
             }
 
