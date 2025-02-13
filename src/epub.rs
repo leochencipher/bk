@@ -232,8 +232,14 @@ fn render(n: Node, c: &mut Chapter, ea: &mut Epub, chapterpath: &str) {
                 match ea.container.by_name(ipath.join("/").as_str()) {
                     Ok(mut f) => {
                         f.read_to_end(&mut buffer).unwrap();
+                        let width = n.attribute("width")
+                            .or_else(|| n.attribute("style")
+                                .and_then(|s| s.split(';')
+                                    .find(|p| p.trim().starts_with("width:"))
+                                    .map(|w| w.split(':').nth(1).unwrap().trim())))
+                            .unwrap_or("auto");
                         ea.imgs.insert(String::from(url), buffer);
-                        c.text.push_str(&format!("\n[IMG][{}]\n", url));
+                        c.text.push_str(&format!("\n[IMG][{}][{}]\n", url, width));
                     }
                     Err(_) => c.text.push_str("\n[IMG_MISSING]\n"),
                 }

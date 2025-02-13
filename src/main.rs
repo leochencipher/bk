@@ -225,7 +225,15 @@ impl Bk<'_> {
                         Print(format!("[{}]", img_index))
                     )
                     .unwrap();
-                    let url = &line[6..(line.len() - 1)];
+                    // [IMG][url][width]
+                    let parts: Vec<&str> = line[6..line.len()-1].split("][").collect();
+                    let (url, width_str) = (parts[0], parts[1]);
+                        let width: u32 = width_str.trim_end_matches(|c: char| !c.is_ascii_digit())
+                            .parse()
+                            .unwrap_or(100);
+                        let width = min(width, 100);
+                    println!("{}", line);
+                    println!("url: {}, width: {}", url, width);
                     let buf = bk.imgs.get(url).unwrap();
                     let img = image::load_from_memory(&buf)
                         .expect("Data from stdin could not be decoded.");
@@ -240,7 +248,7 @@ impl Bk<'_> {
                             x: bk.max_width + 10,
                             y: last_y,
                             // set dimensions
-                            width: Some(min(img.width() / ratio, (2 * bk.pad() - 10) as u32)),
+                            width: Some((min(img.width() / ratio, (2 * bk.pad() - 10) as u32) * width) / 100 + 1),
                             ..Default::default()
                         };
                     } else {
