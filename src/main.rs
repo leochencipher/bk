@@ -9,24 +9,26 @@ use crossterm::{
     },
     terminal,
 };
-use image::GenericImageView;
 use serde::{Deserialize, Serialize};
 use std::{
-    cmp::{max, min},
+    cmp::min,
     collections::HashMap,
     env, fs, i16,
     io::{self, Write},
     iter,
     process::exit,
+    sync::Arc,
+    time::Duration,
     u16, u32,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use viuer::Config;
 
 mod view;
-use view::{Page, Toc, View};
+use view::{Page, Toc, Tts, View};
 
 mod epub;
+mod tts;
 
 fn wrap(text: &str, max_cols: usize) -> Vec<(usize, usize)> {
     let mut lines = Vec::new();
@@ -119,6 +121,7 @@ pub struct Bk<'a> {
     meta: Vec<String>,
     query: String,
     imgs: HashMap<String, Vec<u8>>,
+    tts: Option<tts::TtsSession>,
 }
 
 impl Bk<'_> {
@@ -161,6 +164,7 @@ impl Bk<'_> {
             meta,
             query: String::new(),
             imgs,
+            tts: None,
         };
 
         bk.jump_byte(args.chapter, args.byte);
@@ -238,21 +242,20 @@ impl Bk<'_> {
                     let img = image::load_from_memory(&buf)
                         .expect("Data from stdin could not be decoded.");
                     // check if the print image trigger's scroll
-                    let mut conf;
                     let ratio: u32 = 2;
-                    if (img.width() / ratio / (2 * bk.pad() as u32 - 10))
+                    let conf = if (img.width() / ratio / (2 * bk.pad() as u32 - 10))
                         > (img.height() / 2 / ratio / (bk.rows as u32 - last_y as u32))
                     {
-                        conf = Config {
+                        Config {
                             // set offset
                             x: bk.max_width + 10,
                             y: last_y,
                             // set dimensions
                             width: Some((min(img.width() / ratio, (2 * bk.pad() - 10) as u32) * width) / 100 + 1),
                             ..Default::default()
-                        };
+                        }
                     } else {
-                        conf = Config {
+                        Config {
                             // set offset
                             x: bk.max_width + 10,
                             y: last_y,
@@ -262,8 +265,8 @@ impl Bk<'_> {
                                 bk.rows as u32 - last_y as u32,
                             )),
                             ..Default::default()
-                        };
-                    }
+                        }
+                    };
                     let (_print_width, print_height) =
                         viuer::print(&img, &conf).expect("Image printing failed.");
                     queue!(
@@ -276,13 +279,26 @@ impl Bk<'_> {
                     last_y = last_y + print_height as i16 + 2;
                 }
             }
-            queue!(stdout, cursor::MoveTo(5, bk.cursor as u16)).unwrap();
+            if bk.tts.is_none() {
+                queue!(stdout, cursor::MoveTo(5, bk.cursor as u16)).unwrap();
+            }
             stdout.flush().unwrap();
         };
 
         render(self);
         loop {
-            match event::read()? {
+            let event = if self.tts.is_some() {
+                if event::poll(Duration::from_millis(80))? {
+                    event::read()?
+                } else {
+                    render(self);
+                    continue;
+                }
+            } else {
+                event::read()?
+            };
+
+            match event {
                 Event::Key(e) => self.view.on_key(self, e.code),
                 Event::Mouse(e) => {
                     // XXX idk seems lame
@@ -305,6 +321,10 @@ impl Bk<'_> {
                 }
             }
             if self.quit {
+                if let Some(s) = self.tts.take() {
+                    let _ = s.cmd_tx.send(tts::TtsCommand::Stop);
+                    s.join_worker();
+                }
                 break;
             }
             render(self);
@@ -374,6 +394,27 @@ impl Bk<'_> {
                 }
                 false
             }
+        }
+    }
+
+    fn enter_tts(&mut self) {
+        let chapters = Arc::new(self.chapters.clone());
+        let session = tts::spawn_session(chapters, self.chapter, self.line);
+        self.tts = Some(session);
+        self.view = &Tts;
+    }
+
+    fn leave_tts(&mut self) {
+        if let Some(s) = self.tts.take() {
+            let _ = s.cmd_tx.send(tts::TtsCommand::Stop);
+            s.join_worker();
+        }
+        self.view = &Page;
+    }
+
+    fn tts_cmd(&self, cmd: tts::TtsCommand) {
+        if let Some(s) = self.tts.as_ref() {
+            let _ = s.cmd_tx.send(cmd);
         }
     }
 }

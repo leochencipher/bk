@@ -6,6 +6,7 @@ use std::{
     io::{self, Read},
 };
 
+#[derive(Clone)]
 pub struct Chapter {
     pub title: String,
     // single string for search

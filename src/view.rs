@@ -6,8 +6,9 @@ use crossterm::{
     style::Attribute::*,
 };
 use std::cmp::{min, Ordering};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::tts::TtsCommand;
 use crate::{Bk, Direction, SearchArgs};
 use clipboard::ClipboardContext;
 use clipboard::ClipboardProvider;
@@ -85,6 +86,8 @@ impl View for Help {
                       Fn  Help
                      Tab  Table of Contents
                        i  Progress and Metadata
+                       t  Text-to-speech (Kokoro)
+               (in TTS)  [ ]  voice  Space  pause  +/-  speed
 
 PageDown Right Space f l  Page Down
          PageUp Left b h  Page Up
@@ -324,6 +327,7 @@ impl View for Page {
                 bk.view = &Toc;
             }
             F(_) => bk.view = &Help,
+            Char('t') => bk.enter_tts(),
             Char('m') => bk.view = &Mark,
             Char('\'') => bk.view = &Jump,
             Char('i') => bk.view = &Metadata,
@@ -440,6 +444,149 @@ impl View for Page {
         }
 
         buf
+    }
+}
+
+pub struct Tts;
+
+fn truncate_row(s: &str, max_cols: usize) -> String {
+    if s.width_cjk() <= max_cols {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut cols = 0;
+    for ch in s.chars() {
+        let w = ch.width().unwrap_or(0);
+        if cols + w > max_cols.saturating_sub(1) {
+            break;
+        }
+        out.push(ch);
+        cols += w;
+    }
+    out.push('…');
+    out
+}
+
+/// Word-wrap `text` to lines at most `max_cols` wide (Unicode-aware).
+fn wrap_paragraph(text: &str, max_cols: usize) -> Vec<String> {
+    if max_cols == 0 {
+        return vec![text.to_string()];
+    }
+    let t = text.trim();
+    if t.is_empty() {
+        return vec![];
+    }
+
+    fn flush_long_token(tok: &str, max_cols: usize, lines: &mut Vec<String>) {
+        let mut buf = String::new();
+        let mut width = 0usize;
+        for ch in tok.chars() {
+            let cw = ch.width().unwrap_or(0);
+            if width + cw > max_cols && !buf.is_empty() {
+                lines.push(std::mem::take(&mut buf));
+                width = 0;
+            }
+            buf.push(ch);
+            width += cw;
+        }
+        if !buf.is_empty() {
+            lines.push(buf);
+        }
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    let mut line_w = 0usize;
+
+    for tok in t.split_whitespace() {
+        let tw = tok.width_cjk();
+        let need = if line.is_empty() { tw } else { tw + 1 };
+        if tw > max_cols {
+            if !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+                line_w = 0;
+            }
+            flush_long_token(tok, max_cols, &mut lines);
+            continue;
+        }
+        if line_w + need > max_cols {
+            lines.push(std::mem::take(&mut line));
+            line_w = 0;
+        }
+        if !line.is_empty() {
+            line.push(' ');
+            line_w += 1;
+        }
+        line.push_str(tok);
+        line_w += tw;
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+fn tts_segment_body(seg_current: &str, seg_next: &str, max_cols: usize) -> Vec<String> {
+    let mut body = Vec::new();
+    body.extend(wrap_paragraph(&format!("Now: {seg_current}"), max_cols));
+    body.push(String::new());
+    body.extend(wrap_paragraph(&format!("Next: {seg_next}"), max_cols));
+    body
+}
+
+impl View for Tts {
+    fn on_key(&self, bk: &mut Bk, kc: KeyCode) {
+        match kc {
+            Esc | Char('q') => bk.leave_tts(),
+            Char(' ') => bk.tts_cmd(TtsCommand::TogglePause),
+            Char('+') | Char('=') => bk.tts_cmd(TtsCommand::SpeedUp),
+            Char('-') | Char('_') => bk.tts_cmd(TtsCommand::SpeedDown),
+            Char(']') => bk.tts_cmd(TtsCommand::VoiceNext),
+            Char('[') => bk.tts_cmd(TtsCommand::VoicePrev),
+            _ => (),
+        }
+    }
+    fn render(&self, bk: &Bk) -> Vec<String> {
+        let rows = bk.rows;
+        let w = bk.max_width as usize;
+        let st = bk
+            .tts
+            .as_ref()
+            .and_then(|s| s.state.lock().ok())
+            .map(|g| g.clone())
+            .unwrap_or_default();
+
+        let header: Vec<String> = vec![
+            truncate_row(
+                "TTS — Space pause  [ ] voice  +/- speed  q Esc quit",
+                w,
+            ),
+            truncate_row(
+                &format!(
+                    "voice {}  speed {:.2}x  {}{}",
+                    st.voice_name,
+                    st.speed,
+                    st.status,
+                    if st.paused { "  (paused)" } else { "" }
+                ),
+                w,
+            ),
+        ];
+        let content_budget = rows.saturating_sub(header.len());
+        let mut body = tts_segment_body(&st.seg_current, &st.seg_next, w);
+
+        if body.len() > content_budget {
+            body.truncate(content_budget.saturating_sub(1));
+            body.push(truncate_row("… (taller terminal shows more)", w));
+        }
+
+        let mut lines = header;
+        lines.extend(body);
+        while lines.len() < rows {
+            lines.push(String::new());
+        }
+        lines.truncate(rows);
+        lines
     }
 }
 
