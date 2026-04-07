@@ -236,8 +236,6 @@ impl Bk<'_> {
                             .parse()
                             .unwrap_or(100);
                         let width = min(width, 100);
-                    println!("{}", line);
-                    println!("url: {}, width: {}", url, width);
                     let buf = bk.imgs.get(url).unwrap();
                     let img = image::load_from_memory(&buf)
                         .expect("Data from stdin could not be decoded.");

@@ -19,7 +19,9 @@ const PLAY_VOLUME: f32 = 0.85;
 /// Kokoro outputs mono f32 PCM at 24 kHz.
 const KOKORO_SAMPLE_RATE: u32 = 24_000;
 /// Poll interval while waiting for the current clip to finish (command drain responsiveness).
-const DRAIN_POLL_MS: u64 = 5;
+const DRAIN_POLL_MS: u64 = 20;
+/// Abort synthesis if it hasn't returned within this many seconds.
+const SYNTH_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Debug)]
 pub enum TtsCommand {
@@ -74,10 +76,6 @@ impl TtsSession {
 
 struct Segment {
     text: String,
-    #[allow(dead_code)]
-    chapter: usize,
-    #[allow(dead_code)]
-    byte: usize,
 }
 
 fn normalize_chunk(s: &str) -> String {
@@ -240,11 +238,7 @@ fn split_chapter_text(chapter: usize, mut rest: &str, mut abs_byte: usize) -> Ve
         if !slice.is_empty() {
             let normalized = normalize_chunk(slice);
             if !normalized.is_empty() {
-                out.push(Segment {
-                    text: normalized,
-                    chapter,
-                    byte: abs_byte,
-                });
+                out.push(Segment { text: normalized });
             }
         }
         rest = rest.get(end_rel..).unwrap_or("");
@@ -393,7 +387,10 @@ fn sync_sink_speed(sink: &Sink, speed_holder: &Arc<Mutex<f32>>) {
     }
 }
 
-fn wait_between_segments(
+/// Drain pending commands from `cmd_rx`.
+/// If `block_while_paused` is true, keeps sleeping (50 ms) until unpaused or stopped.
+/// Returns `false` if `Stop` was received (sink cleared, status set to "Stopped").
+fn drain_commands(
     cmd_rx: &Receiver<TtsCommand>,
     state: &Arc<Mutex<TtsDisplayState>>,
     speed_holder: &Arc<Mutex<f32>>,
@@ -401,14 +398,19 @@ fn wait_between_segments(
     voices: &[String],
     voice_pick: &Arc<Mutex<Option<usize>>>,
     sink: Option<&Sink>,
+    block_while_paused: bool,
 ) -> bool {
     loop {
-        let mut stop = false;
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 TtsCommand::Stop => {
-                    stop = true;
-                    break;
+                    if let Some(s) = sink {
+                        s.clear();
+                    }
+                    if let Ok(mut g) = state.lock() {
+                        g.status = "Stopped".into();
+                    }
+                    return false;
                 }
                 TtsCommand::TogglePause => {
                     let mut p = paused_holder.lock().unwrap();
@@ -443,81 +445,11 @@ fn wait_between_segments(
                 TtsCommand::VoicePrev => voice_prev(voices, voice_pick, state),
             }
         }
-        if stop {
-            if let Some(s) = sink {
-                s.clear();
-            }
-            if let Ok(mut g) = state.lock() {
-                g.status = "Stopped".into();
-            }
-            return false;
-        }
-        if !*paused_holder.lock().unwrap() {
-            break;
+        if !block_while_paused || !*paused_holder.lock().unwrap() {
+            return true;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    true
-}
-
-/// Drain commands while audio is playing (single `Sink` stays open; avoid gaps between segments).
-fn drain_try_recv_commands(
-    cmd_rx: &Receiver<TtsCommand>,
-    state: &Arc<Mutex<TtsDisplayState>>,
-    speed_holder: &Arc<Mutex<f32>>,
-    paused_holder: &Arc<Mutex<bool>>,
-    voices: &[String],
-    voice_pick: &Arc<Mutex<Option<usize>>>,
-    sink: Option<&Sink>,
-) -> bool {
-    while let Ok(cmd) = cmd_rx.try_recv() {
-        match cmd {
-            TtsCommand::Stop => {
-                if let Some(s) = sink {
-                    s.clear();
-                }
-                return false;
-            }
-            TtsCommand::TogglePause => {
-                let mut p = paused_holder.lock().unwrap();
-                *p = !*p;
-                if let Some(s) = sink {
-                    if *p {
-                        s.pause();
-                    } else {
-                        s.play();
-                    }
-                }
-                if let Ok(mut g) = state.lock() {
-                    g.paused = *p;
-                    g.status = if *p { "Paused".into() } else { "Playing".into() };
-                }
-            }
-            TtsCommand::SpeedUp => {
-                let mut sp = speed_holder.lock().unwrap();
-                *sp = (*sp + SPEED_STEP).min(SPEED_MAX);
-                if let Some(s) = sink {
-                    s.set_speed(*sp);
-                }
-                if let Ok(mut g) = state.lock() {
-                    g.speed = *sp;
-                }
-            }
-            TtsCommand::SpeedDown => {
-                let mut sp = speed_holder.lock().unwrap();
-                *sp = (*sp - SPEED_STEP).max(SPEED_MIN);
-                if let Some(s) = sink {
-                    s.set_speed(*sp);
-                }
-                if let Ok(mut g) = state.lock() {
-                    g.speed = *sp;
-                }
-            }
-            TtsCommand::VoiceNext => voice_next(voices, voice_pick, state),
-            TtsCommand::VoicePrev => voice_prev(voices, voice_pick, state),
-        }
-    }
-    true
 }
 
 fn run_worker(
@@ -581,8 +513,8 @@ fn run_worker(
     }
 
     let tts = Arc::new(Mutex::new(tts));
-    let (job_tx, job_rx) = mpsc::channel::<(String, Option<String>)>();
-    let (pcm_tx, pcm_rx) = mpsc::channel::<Result<Vec<f32>, String>>();
+    let (job_tx, job_rx) = mpsc::sync_channel::<(String, Option<String>)>(1);
+    let (pcm_tx, pcm_rx) = mpsc::sync_channel::<Result<Vec<f32>, String>>(1);
     let tts_worker = Arc::clone(&tts);
     std::thread::spawn(move || {
         while let Ok((text, voice)) = job_rx.recv() {
@@ -604,10 +536,15 @@ fn run_worker(
     };
 
     let synth_recv = || -> Result<Vec<f32>, String> {
-        match pcm_rx.recv() {
+        match pcm_rx.recv_timeout(Duration::from_secs(SYNTH_TIMEOUT_SECS)) {
             Ok(Ok(pcm)) => Ok(pcm),
             Ok(Err(e)) => Err(e),
-            Err(_) => Err("Synthesis worker disconnected".into()),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                Err(format!("Synthesis timed out ({}s)", SYNTH_TIMEOUT_SECS))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err("Synthesis worker disconnected".into())
+            }
         }
     };
 
@@ -658,7 +595,7 @@ fn run_worker(
 
     let n = segments.len();
     for play_index in 0..n {
-        if !wait_between_segments(
+        if !drain_commands(
             &cmd_rx,
             &state,
             &speed_holder,
@@ -666,6 +603,7 @@ fn run_worker(
             &voices,
             &voice_pick,
             Some(&sink),
+            true,
         ) {
             return;
         }
@@ -696,11 +634,24 @@ fn run_worker(
             }
         }
 
-        let pcm = pcm_cur.take().expect("segment PCM must be buffered");
+        let pcm = match pcm_cur.take() {
+            Some(p) => p,
+            None => {
+                if let Ok(mut g) = state.lock() {
+                    g.status = "Internal error: PCM buffer missing".into();
+                }
+                return;
+            }
+        };
+        // Prime the audio device on the first segment to avoid clipped onsets.
+        if play_index == 0 {
+            let silence_len = (KOKORO_SAMPLE_RATE / 3) as usize; // 333 ms
+            sink.append(SamplesBuffer::new(1, KOKORO_SAMPLE_RATE, vec![0.0f32; silence_len]));
+        }
         sink.append(SamplesBuffer::new(1, KOKORO_SAMPLE_RATE, pcm));
 
         loop {
-            if !drain_try_recv_commands(
+            if !drain_commands(
                 &cmd_rx,
                 &state,
                 &speed_holder,
@@ -708,10 +659,8 @@ fn run_worker(
                 &voices,
                 &voice_pick,
                 Some(&sink),
+                false,
             ) {
-                if let Ok(mut g) = state.lock() {
-                    g.status = "Stopped".into();
-                }
                 return;
             }
             if sink.empty() {
