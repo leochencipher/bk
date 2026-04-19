@@ -4,21 +4,19 @@ use crossterm::{
     queue,
     style::{
         self,
-        Color::{self, Rgb},
+        Color,
         Colors, Print, ResetColor, SetColors,
     },
     terminal,
 };
-use image::GenericImageView;
 use serde::{Deserialize, Serialize};
 use std::{
-    cmp::{max, min},
+    cmp::min,
     collections::HashMap,
-    env, fs, i16,
+    env, fs,
     io::{self, Write},
     iter,
     process::exit,
-    u16, u32,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use viuer::Config;
@@ -232,38 +230,46 @@ impl Bk<'_> {
                             .parse()
                             .unwrap_or(100);
                         let width = min(width, 100);
-                    println!("{}", line);
-                    println!("url: {}, width: {}", url, width);
-                    let buf = bk.imgs.get(url).unwrap();
-                    let img = image::load_from_memory(&buf)
-                        .expect("Data from stdin could not be decoded.");
+                                    let buf = match bk.imgs.get(url) {
+                        Some(buf) => buf,
+                        None => {
+                            img_index += 1;
+                            continue;
+                        }
+                    };
+                    let img = match image::load_from_memory(buf) {
+                        Ok(img) => img,
+                        Err(_) => {
+                            img_index += 1;
+                            continue;
+                        }
+                    };
                     // check if the print image trigger's scroll
-                    let mut conf;
-                    let ratio: u32 = 2;
-                    if (img.width() / ratio / (2 * bk.pad() as u32 - 10))
-                        > (img.height() / 2 / ratio / (bk.rows as u32 - last_y as u32))
+                    const IMAGE_RATIO: u32 = 2;
+                    let conf = if (img.width() / IMAGE_RATIO / (2 * bk.pad() as u32 - 10))
+                        > (img.height() / 2 / IMAGE_RATIO / (bk.rows as u32 - last_y as u32))
                     {
-                        conf = Config {
+                        Config {
                             // set offset
                             x: bk.max_width + 10,
                             y: last_y,
                             // set dimensions
-                            width: Some((min(img.width() / ratio, (2 * bk.pad() - 10) as u32) * width) / 100 + 1),
+                            width: Some((min(img.width() / IMAGE_RATIO, (2 * bk.pad() - 10) as u32) * width) / 100 + 1),
                             ..Default::default()
-                        };
+                        }
                     } else {
-                        conf = Config {
+                        Config {
                             // set offset
                             x: bk.max_width + 10,
                             y: last_y,
                             // set dimensions
                             height: Some(min(
-                                img.height() / 2 / ratio,
+                                img.height() / 2 / IMAGE_RATIO,
                                 bk.rows as u32 - last_y as u32,
                             )),
                             ..Default::default()
-                        };
-                    }
+                        }
+                    };
                     let (_print_width, print_height) =
                         viuer::print(&img, &conf).expect("Image printing failed.");
                     queue!(
@@ -272,7 +278,7 @@ impl Bk<'_> {
                         Print(format!("[{}]", img_index))
                     )
                     .unwrap();
-                    img_index = img_index + 1;
+                    img_index += 1;
                     last_y = last_y + print_height as i16 + 2;
                 }
             }
@@ -301,7 +307,6 @@ impl Bk<'_> {
                         }
                     }
                     self.view.on_resize(self);
-                    // XXX marks aren't updated
                 }
             }
             if self.quit {
@@ -463,10 +468,10 @@ fn init() -> Result<State, Box<dyn std::error::Error>> {
         }
     };
 
-    // XXX oh god what
     let fg = args
         .fg
-        .map(|s| Rgb {
+        .as_deref()
+        .map(|s| crossterm::style::Color::Rgb {
             r: u8::from_str_radix(&s[0..2], 16).unwrap(),
             g: u8::from_str_radix(&s[2..4], 16).unwrap(),
             b: u8::from_str_radix(&s[4..6], 16).unwrap(),
@@ -474,7 +479,8 @@ fn init() -> Result<State, Box<dyn std::error::Error>> {
         .unwrap_or(style::Color::Reset);
     let bg = args
         .bg
-        .map(|s| Rgb {
+        .as_deref()
+        .map(|s| crossterm::style::Color::Rgb {
             r: u8::from_str_radix(&s[0..2], 16).unwrap(),
             g: u8::from_str_radix(&s[2..4], 16).unwrap(),
             b: u8::from_str_radix(&s[4..6], 16).unwrap(),

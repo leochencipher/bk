@@ -123,10 +123,11 @@ impl Epub {
 
         meta_node.children().filter(Node::is_element).for_each(|n| {
             let name = n.tag_name().name();
-            let text = n.text();
-            if text.is_some() && name != "meta" {
-                self.meta
-                    .push_str(&format!("{}: {}\n", name, text.unwrap()));
+            if let Some(text) = n.text() {
+                if name != "meta" {
+                    self.meta
+                        .push_str(&format!("{}: {}\n", name, text));
+                }
             }
         });
         manifest_node
@@ -216,27 +217,23 @@ fn render(n: Node, c: &mut Chapter, ea: &mut Epub, chapterpath: &str) {
                 let psplit = &format!("{}/{}", chapterpath, url);
                 psplit.split('/').for_each(|comp| {
                     match comp {
-                        "" => (),
-                        "." => (),
-                        ".." => {
-                            ipath.pop();
-                            ();
-                        }
-                        pcomp => {
-                            ipath.push(pcomp);
-                            ();
-                        }
+                        "" | "." => {}
+                        ".." => { ipath.pop(); }
+                        pcomp => { ipath.push(pcomp); }
                     };
                 });
                 let mut buffer = Vec::new();
                 match ea.container.by_name(ipath.join("/").as_str()) {
                     Ok(mut f) => {
-                        f.read_to_end(&mut buffer).unwrap();
+                        if f.read_to_end(&mut buffer).is_err() {
+                            c.text.push_str("\n[IMG_MISSING]\n");
+                            return;
+                        }
                         let width = n.attribute("width")
                             .or_else(|| n.attribute("style")
                                 .and_then(|s| s.split(';')
                                     .find(|p| p.trim().starts_with("width:"))
-                                    .map(|w| w.split(':').nth(1).unwrap().trim())))
+                                    .and_then(|w| w.split(':').nth(1).map(|v| v.trim()))))
                             .unwrap_or("auto");
                         ea.imgs.insert(String::from(url), buffer);
                         c.text.push_str(&format!("\n[IMG][{}][{}]\n", url, width));

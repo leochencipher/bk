@@ -3,15 +3,12 @@ use crossterm::{
         KeyCode::{self, *},
         MouseEvent, MouseEventKind,
     },
-    style::Attribute::*,
+    style::Attribute::{Bold, Italic, Underlined, NoReverse, Reverse},
 };
 use std::cmp::{min, Ordering};
 use unicode_width::UnicodeWidthChar;
 
 use crate::{Bk, Direction, SearchArgs};
-use clipboard::ClipboardContext;
-use clipboard::ClipboardProvider;
-use notify_rust::Notification;
 
 pub trait View {
     fn render(&self, bk: &Bk) -> Vec<String>;
@@ -233,55 +230,6 @@ impl Page {
             return;
         }
 
-        // Check if the clicked character is CJK
-        let is_cjk = c.text[byte..]
-            .chars()
-            .next()
-            .map(|ch| {
-                (ch as u32 >= 0x4E00 && ch as u32 <= 0x9FFF) || // CJK Unified Ideographs
-                (ch as u32 >= 0x3040 && ch as u32 <= 0x30FF) || // Hiragana and Katakana
-                (ch as u32 >= 0xAC00 && ch as u32 <= 0xD7AF)    // Hangul Syllables
-            })
-            .unwrap_or(false);
-
-        let (word_start, word_end) = if is_cjk {
-            (byte, byte + c.text[byte..].chars().next().unwrap().len_utf8())
-        } else {
-            let mut word_start = byte;
-            let mut word_end = byte;
-
-            // Find the start of the word
-            while word_start > start
-                && c.text[word_start - 1..word_start]
-                    .chars()
-                    .next()
-                    .unwrap()
-                    .is_ascii_alphabetic()
-            {
-                word_start -= 1;
-            }
-
-            // Find the end of the word
-            while word_end < end && c.text[word_end..].chars().next().unwrap().is_ascii_alphabetic() {
-                word_end += 1;
-            }
-
-            (word_start, word_end)
-        };
-
-        let clicked_word = &c.text[word_start..word_end];
-        if let Some(definition) = webster::dictionary(&clicked_word.to_lowercase()) {
-            Notification::new()
-                .summary(clicked_word)
-                .body(definition)
-                .icon("Dictionary")
-                .show()
-                .unwrap();
-        }
-        // Copy the word to the clipboard
-        let mut ctx: ClipboardContext = ClipboardProvider::new().unwrap();
-        ctx.set_contents(clicked_word.to_string()).unwrap();
-
         let r = c.links.binary_search_by(|&(start, end, _)| {
             if start > byte {
                 Ordering::Greater
@@ -294,9 +242,10 @@ impl Page {
 
         if let Ok(i) = r {
             let url = &c.links[i].2;
-            let &(c, byte) = bk.links.get(url).unwrap();
-            bk.mark('\'');
-            bk.jump_byte(c, byte);
+            if let Some(&(c, byte)) = bk.links.get(url) {
+                bk.mark('\'');
+                bk.jump_byte(c, byte);
+            }
         }
     }
     fn start_search(&self, bk: &mut Bk, dir: Direction) {
@@ -363,8 +312,8 @@ impl View for Page {
         }
     }
     fn on_resize(&self, bk: &mut Bk) {
-        // lazy
-        bk.line = min(bk.line, bk.chapters[bk.chapter].lines.len() - 1);
+        let max_line = bk.chapters[bk.chapter].lines.len().saturating_sub(1);
+        bk.line = min(bk.line, max_line);
     }
     fn render(&self, bk: &Bk) -> Vec<String> {
         let c = &bk.chapters[bk.chapter];
