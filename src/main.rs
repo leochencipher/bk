@@ -98,6 +98,37 @@ fn compute_line_offsets(chapters: &[epub::Chapter]) -> Vec<usize> {
     offsets
 }
 
+fn build_status(bk: &Bk) -> String {
+    let chapter_lines = bk.chapters[bk.chapter].lines.len();
+    let total_pages = ((chapter_lines as f32) / (bk.rows as f32)).ceil() as usize;
+    let page = total_pages
+        .saturating_sub(chapter_lines.saturating_sub(1).saturating_sub(bk.line) / bk.rows);
+
+    let total_lines = *bk.chapter_line_offsets.last().unwrap_or(&1);
+    let current_line = bk.chapter_line_offsets[bk.chapter] + bk.line;
+    let pct = if total_lines > 0 {
+        current_line * 100 / total_lines
+    } else {
+        0
+    };
+
+    let title = &bk.chapters[bk.chapter].title;
+    let right = format!("  pg {}/{}  {}%", page, total_pages, pct);
+    let width = bk.max_width as usize;
+    let max_title = width.saturating_sub(right.len());
+    let title_display = if title.chars().count() > max_title {
+        title
+            .chars()
+            .take(max_title.saturating_sub(1))
+            .collect::<String>()
+            + "…"
+    } else {
+        title.clone()
+    };
+    let pad = width.saturating_sub(title_display.chars().count() + right.len());
+    format!("{}{}{}", title_display, " ".repeat(pad), right)
+}
+
 struct SearchArgs {
     dir: Direction,
     skip: bool,
@@ -166,7 +197,7 @@ impl Bk<'_> {
             links: epub.links,
             colors: args.colors,
             cols,
-            rows: rows as usize,
+            rows: (rows as usize).saturating_sub(1).max(1),
             max_width: args.width,
             view: if args.toc { &Toc } else { &Page },
             cursor: 0,
@@ -287,6 +318,17 @@ impl Bk<'_> {
                     last_y = last_y + print_height as i16 + 2;
                 }
             }
+            // Status bar on the last terminal row
+            let status = build_status(bk);
+            queue!(
+                stdout,
+                cursor::MoveTo(5, bk.rows as u16),
+                Print(style::Attribute::Reverse),
+                Print(&status),
+                Print(style::Attribute::NoReverse),
+            )
+            .unwrap();
+
             queue!(stdout, cursor::MoveTo(5, bk.cursor as u16)).unwrap();
             stdout.flush().unwrap();
         };
@@ -305,7 +347,7 @@ impl Bk<'_> {
                     self.view.on_mouse(self, e);
                 }
                 Event::Resize(cols, rows) => {
-                    self.rows = rows as usize;
+                    self.rows = (rows as usize).saturating_sub(1).max(1);
                     if cols != self.cols {
                         self.cols = cols;
                         let width = min(cols, self.max_width) as usize;
