@@ -114,7 +114,7 @@ fn build_status(bk: &Bk) -> String {
 
     let title = &bk.chapters[bk.chapter].title;
     let right = format!("  pg {}/{}  {}%", page, total_pages, pct);
-    let width = bk.max_width as usize;
+    let width = bk.cols as usize;
     let max_title = width.saturating_sub(right.len());
     let title_display = if title.chars().count() > max_title {
         title
@@ -322,7 +322,7 @@ impl Bk<'_> {
             let status = build_status(bk);
             queue!(
                 stdout,
-                cursor::MoveTo(5, bk.rows as u16),
+                cursor::MoveTo(0, bk.rows as u16),
                 Print(style::Attribute::Reverse),
                 Print(&status),
                 Print(style::Attribute::NoReverse),
