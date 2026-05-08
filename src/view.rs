@@ -137,7 +137,7 @@ impl View for Toc {
             MouseEventKind::Down(_) => self.click(bk, e.row as usize),
             MouseEventKind::ScrollDown => self.next(bk, 3),
             MouseEventKind::ScrollUp => self.prev(bk, 3),
-            _ => (),
+            _ => { bk.dirty = false; }
         }
     }
     fn on_key(&self, bk: &mut Bk, kc: KeyCode) {
@@ -160,7 +160,7 @@ impl View for Toc {
             PageUp | Char('b') => self.prev(bk, bk.rows),
             Char('d') => self.next(bk, bk.rows / 2),
             Char('u') => self.prev(bk, bk.rows / 2),
-            _ => (),
+            _ => { bk.dirty = false; }
         }
     }
     fn render(&self, bk: &Bk) -> Vec<String> {
@@ -260,7 +260,7 @@ impl View for Page {
             MouseEventKind::Down(_) => self.click(bk, e),
             MouseEventKind::ScrollDown => self.scroll_down(bk, 3),
             MouseEventKind::ScrollUp => self.scroll_up(bk, 3),
-            _ => (),
+            _ => { bk.dirty = false; }
         }
     }
     fn on_key(&self, bk: &mut Bk, kc: KeyCode) {
@@ -307,7 +307,7 @@ impl View for Page {
             Right | PageDown | Char('f' | 'l' | ' ') => self.scroll_down(bk, bk.rows),
             Char('[') => self.prev_chapter(bk),
             Char(']') => self.next_chapter(bk),
-            _ => (),
+            _ => { bk.dirty = false; }
         }
     }
     fn on_resize(&self, bk: &mut Bk) {
@@ -429,7 +429,7 @@ impl View for Search {
                     bk.jump_reset();
                 }
             }
-            _ => (),
+            _ => { bk.dirty = false; }
         }
     }
     fn render(&self, bk: &Bk) -> Vec<String> {

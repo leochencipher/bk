@@ -142,6 +142,7 @@ enum Direction {
 
 pub struct Bk<'a> {
     quit: bool,
+    dirty: bool,
     chapters: Vec<epub::Chapter>,
     // position in the book
     chapter: usize,
@@ -190,6 +191,7 @@ impl Bk<'_> {
 
         let mut bk = Bk {
             quit: false,
+            dirty: true,
             chapters,
             chapter: 0,
             line: 0,
@@ -338,15 +340,19 @@ impl Bk<'_> {
             let event = event::read()?;
 
             match event {
-                Event::Key(e) => self.view.on_key(self, e.code),
+                Event::Key(e) => {
+                    self.dirty = true;
+                    self.view.on_key(self, e.code);
+                }
                 Event::Mouse(e) => {
-                    // XXX idk seems lame
                     if e.kind == event::MouseEventKind::Moved {
                         continue;
                     }
+                    self.dirty = true;
                     self.view.on_mouse(self, e);
                 }
                 Event::Resize(cols, rows) => {
+                    self.dirty = true;
                     self.rows = (rows as usize).saturating_sub(1).max(1);
                     if cols != self.cols {
                         self.cols = cols;
@@ -363,7 +369,10 @@ impl Bk<'_> {
             if self.quit {
                 break;
             }
-            render(self);
+            if self.dirty {
+                render(self);
+                self.dirty = false;
+            }
         }
 
         queue!(
