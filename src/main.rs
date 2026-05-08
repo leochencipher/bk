@@ -17,18 +17,15 @@ use std::{
     io::{self, Write},
     iter,
     process::exit,
-    sync::Arc,
-    time::Duration,
     u16, u32,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use viuer::Config;
 
 mod view;
-use view::{Page, Toc, Tts, View};
+use view::{Page, Toc, View};
 
 mod epub;
-mod tts;
 
 fn wrap(text: &str, max_cols: usize) -> Vec<(usize, usize)> {
     let mut lines = Vec::new();
@@ -90,6 +87,17 @@ fn wrap(text: &str, max_cols: usize) -> Vec<(usize, usize)> {
     lines
 }
 
+fn compute_line_offsets(chapters: &[epub::Chapter]) -> Vec<usize> {
+    let mut offsets = Vec::with_capacity(chapters.len() + 1);
+    let mut acc = 0;
+    for c in chapters {
+        offsets.push(acc);
+        acc += c.lines.len();
+    }
+    offsets.push(acc); // offsets[chapters.len()] = total line count
+    offsets
+}
+
 struct SearchArgs {
     dir: Direction,
     skip: bool,
@@ -121,7 +129,7 @@ pub struct Bk<'a> {
     meta: Vec<String>,
     query: String,
     imgs: HashMap<String, Vec<u8>>,
-    tts: Option<tts::TtsSession>,
+    chapter_line_offsets: Vec<usize>,
 }
 
 impl Bk<'_> {
@@ -147,6 +155,8 @@ impl Bk<'_> {
             }
         }
 
+        let chapter_line_offsets = compute_line_offsets(&chapters);
+
         let mut bk = Bk {
             quit: false,
             chapters,
@@ -164,7 +174,7 @@ impl Bk<'_> {
             meta,
             query: String::new(),
             imgs,
-            tts: None,
+            chapter_line_offsets,
         };
 
         bk.jump_byte(args.chapter, args.byte);
@@ -277,24 +287,13 @@ impl Bk<'_> {
                     last_y = last_y + print_height as i16 + 2;
                 }
             }
-            if bk.tts.is_none() {
-                queue!(stdout, cursor::MoveTo(5, bk.cursor as u16)).unwrap();
-            }
+            queue!(stdout, cursor::MoveTo(5, bk.cursor as u16)).unwrap();
             stdout.flush().unwrap();
         };
 
         render(self);
         loop {
-            let event = if self.tts.is_some() {
-                if event::poll(Duration::from_millis(80))? {
-                    event::read()?
-                } else {
-                    render(self);
-                    continue;
-                }
-            } else {
-                event::read()?
-            };
+            let event = event::read()?;
 
             match event {
                 Event::Key(e) => self.view.on_key(self, e.code),
@@ -314,15 +313,12 @@ impl Bk<'_> {
                             c.lines = wrap(&c.text, width);
                         }
                     }
+                    self.chapter_line_offsets = compute_line_offsets(&self.chapters);
                     self.view.on_resize(self);
                     // XXX marks aren't updated
                 }
             }
             if self.quit {
-                if let Some(s) = self.tts.take() {
-                    let _ = s.cmd_tx.send(tts::TtsCommand::Stop);
-                    s.join_worker();
-                }
                 break;
             }
             render(self);
@@ -395,26 +391,6 @@ impl Bk<'_> {
         }
     }
 
-    fn enter_tts(&mut self) {
-        let chapters = Arc::new(self.chapters.clone());
-        let session = tts::spawn_session(chapters, self.chapter, self.line);
-        self.tts = Some(session);
-        self.view = &Tts;
-    }
-
-    fn leave_tts(&mut self) {
-        if let Some(s) = self.tts.take() {
-            let _ = s.cmd_tx.send(tts::TtsCommand::Stop);
-            s.join_worker();
-        }
-        self.view = &Page;
-    }
-
-    fn tts_cmd(&self, cmd: tts::TtsCommand) {
-        if let Some(s) = self.tts.as_ref() {
-            let _ = s.cmd_tx.send(cmd);
-        }
-    }
 }
 
 #[derive(argh::FromArgs)]
