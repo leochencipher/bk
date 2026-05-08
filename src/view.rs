@@ -3,12 +3,11 @@ use crossterm::{
         KeyCode::{self, *},
         MouseEvent, MouseEventKind,
     },
-    style::Attribute::*,
+    style::{Attribute::*, Color, SetBackgroundColor, SetForegroundColor},
 };
 use std::cmp::{min, Ordering};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthChar;
 
-use crate::tts::TtsCommand;
 use crate::{Bk, Direction, SearchArgs};
 
 pub trait View {
@@ -83,8 +82,6 @@ impl View for Help {
                       Fn  Help
                      Tab  Table of Contents
                        i  Progress and Metadata
-                       t  Text-to-speech (Kokoro)
-               (in TTS)  [ ]  voice  Space  pause  +/-  speed
 
 PageDown Right Space f l  Page Down
          PageUp Left b h  Page Up
@@ -275,7 +272,6 @@ impl View for Page {
                 bk.view = &Toc;
             }
             F(_) => bk.view = &Help,
-            Char('t') => bk.enter_tts(),
             Char('m') => bk.view = &Mark,
             Char('\'') => bk.view = &Jump,
             Char('i') => bk.view = &Metadata,
@@ -324,12 +320,19 @@ impl View for Page {
         let text_start = c.lines[bk.line].0;
         let text_end = c.lines[last_line - 1].1;
 
-        let mut search = Vec::new();
+        let mut search: Vec<(usize, String)> = Vec::new();
         if !bk.query.is_empty() {
             let len = bk.query.len();
+            let hl_on =
+                SetBackgroundColor(Color::Rgb { r: 250, g: 179, b: 135 }).to_string();
+            let hl_off = format!(
+                "{}{}",
+                SetForegroundColor(bk.colors.foreground.unwrap_or(Color::Reset)),
+                SetBackgroundColor(bk.colors.background.unwrap_or(Color::Reset))
+            );
             for (pos, _) in c.text[text_start..text_end].match_indices(&bk.query) {
-                search.push((text_start + pos, Reverse));
-                search.push((text_start + pos + len, NoReverse));
+                search.push((text_start + pos, hl_on.clone()));
+                search.push((text_start + pos + len, hl_off.clone()));
             }
         }
         let mut search = search.into_iter().peekable();
@@ -341,20 +344,21 @@ impl View for Page {
             };
 
             let map = c.attrs[start].2;
-            let mut head = Vec::new();
+            let mut head: Vec<(usize, String)> = Vec::new();
             for attr in [Bold, Italic, Underlined] {
                 if map.has(attr) {
-                    head.push((text_start, attr));
+                    head.push((text_start, attr.to_string()));
                 }
             }
-            let tail = c.attrs[start + 1..]
+            let tail = c
+                .attrs[start + 1..]
                 .iter()
                 .take_while(|x| x.0 <= text_end)
-                .map(|x| (x.0, x.1));
+                .map(|x| (x.0, x.1.to_string()));
             head.into_iter().chain(tail).peekable()
         };
 
-        let mut attrs = Vec::new();
+        let mut attrs: Vec<(usize, String)> = Vec::new();
         loop {
             match (search.peek(), base.peek()) {
                 (None, None) => break,
@@ -366,13 +370,13 @@ impl View for Page {
                     attrs.extend(base);
                     break;
                 }
-                (Some(&s), Some(&b)) => {
-                    if s.0 < b.0 {
-                        attrs.push(s);
-                        search.next();
+                (Some(_), Some(_)) => {
+                    let s_pos = search.peek().unwrap().0;
+                    let b_pos = base.peek().unwrap().0;
+                    if s_pos < b_pos {
+                        attrs.push(search.next().unwrap());
                     } else {
-                        attrs.push(b);
-                        base.next();
+                        attrs.push(base.next().unwrap());
                     }
                 }
             }
@@ -384,7 +388,7 @@ impl View for Page {
             let mut s = String::new();
             while let Some((attr_pos, attr)) = attrs.next_if(|a| a.0 <= line_end) {
                 s.push_str(&c.text[pos..attr_pos]);
-                s.push_str(&attr.to_string());
+                s.push_str(&attr);
                 pos = attr_pos;
             }
             s.push_str(&c.text[pos..line_end]);
@@ -392,149 +396,6 @@ impl View for Page {
         }
 
         buf
-    }
-}
-
-pub struct Tts;
-
-fn truncate_row(s: &str, max_cols: usize) -> String {
-    if s.width_cjk() <= max_cols {
-        return s.to_string();
-    }
-    let mut out = String::new();
-    let mut cols = 0;
-    for ch in s.chars() {
-        let w = ch.width().unwrap_or(0);
-        if cols + w > max_cols.saturating_sub(1) {
-            break;
-        }
-        out.push(ch);
-        cols += w;
-    }
-    out.push('…');
-    out
-}
-
-/// Word-wrap `text` to lines at most `max_cols` wide (Unicode-aware).
-fn wrap_paragraph(text: &str, max_cols: usize) -> Vec<String> {
-    if max_cols == 0 {
-        return vec![text.to_string()];
-    }
-    let t = text.trim();
-    if t.is_empty() {
-        return vec![];
-    }
-
-    fn flush_long_token(tok: &str, max_cols: usize, lines: &mut Vec<String>) {
-        let mut buf = String::new();
-        let mut width = 0usize;
-        for ch in tok.chars() {
-            let cw = ch.width().unwrap_or(0);
-            if width + cw > max_cols && !buf.is_empty() {
-                lines.push(std::mem::take(&mut buf));
-                width = 0;
-            }
-            buf.push(ch);
-            width += cw;
-        }
-        if !buf.is_empty() {
-            lines.push(buf);
-        }
-    }
-
-    let mut lines: Vec<String> = Vec::new();
-    let mut line = String::new();
-    let mut line_w = 0usize;
-
-    for tok in t.split_whitespace() {
-        let tw = tok.width_cjk();
-        let need = if line.is_empty() { tw } else { tw + 1 };
-        if tw > max_cols {
-            if !line.is_empty() {
-                lines.push(std::mem::take(&mut line));
-                line_w = 0;
-            }
-            flush_long_token(tok, max_cols, &mut lines);
-            continue;
-        }
-        if line_w + need > max_cols {
-            lines.push(std::mem::take(&mut line));
-            line_w = 0;
-        }
-        if !line.is_empty() {
-            line.push(' ');
-            line_w += 1;
-        }
-        line.push_str(tok);
-        line_w += tw;
-    }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    lines
-}
-
-fn tts_segment_body(seg_current: &str, seg_next: &str, max_cols: usize) -> Vec<String> {
-    let mut body = Vec::new();
-    body.extend(wrap_paragraph(&format!("Now: {seg_current}"), max_cols));
-    body.push(String::new());
-    body.extend(wrap_paragraph(&format!("Next: {seg_next}"), max_cols));
-    body
-}
-
-impl View for Tts {
-    fn on_key(&self, bk: &mut Bk, kc: KeyCode) {
-        match kc {
-            Esc | Char('q') => bk.leave_tts(),
-            Char(' ') => bk.tts_cmd(TtsCommand::TogglePause),
-            Char('+') | Char('=') => bk.tts_cmd(TtsCommand::SpeedUp),
-            Char('-') | Char('_') => bk.tts_cmd(TtsCommand::SpeedDown),
-            Char(']') => bk.tts_cmd(TtsCommand::VoiceNext),
-            Char('[') => bk.tts_cmd(TtsCommand::VoicePrev),
-            _ => (),
-        }
-    }
-    fn render(&self, bk: &Bk) -> Vec<String> {
-        let rows = bk.rows;
-        let w = bk.max_width as usize;
-        let st = bk
-            .tts
-            .as_ref()
-            .and_then(|s| s.state.lock().ok())
-            .map(|g| g.clone())
-            .unwrap_or_default();
-
-        let header: Vec<String> = vec![
-            truncate_row(
-                "TTS — Space pause  [ ] voice  +/- speed  q Esc quit",
-                w,
-            ),
-            truncate_row(
-                &format!(
-                    "voice {}  speed {:.2}x  {}{}",
-                    st.voice_name,
-                    st.speed,
-                    st.status,
-                    if st.paused { "  (paused)" } else { "" }
-                ),
-                w,
-            ),
-        ];
-        let content_budget = rows.saturating_sub(header.len());
-        let mut body = tts_segment_body(&st.seg_current, &st.seg_next, w);
-
-        if body.len() > content_budget {
-            body.truncate(content_budget.saturating_sub(1));
-            body.push(truncate_row("… (taller terminal shows more)", w));
-        }
-
-        let mut lines = header;
-        lines.extend(body);
-        while lines.len() < rows {
-            lines.push(String::new());
-        }
-        lines.truncate(rows);
-        lines
     }
 }
 
