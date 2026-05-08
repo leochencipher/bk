@@ -1,4 +1,4 @@
-use crossterm::style::{Attribute, Attributes};
+use crossterm::style::{Attribute, Attributes, Color, SetForegroundColor};
 use roxmltree::{Document, Node, ParsingOptions};
 use std::{
     collections::HashMap,
@@ -14,6 +14,8 @@ pub struct Chapter {
     pub lines: Vec<(usize, usize)>,
     // crossterm gives us a bitset but doesn't let us diff it, so store the state transition
     pub attrs: Vec<(usize, Attribute, Attributes)>,
+    // raw ANSI color-change sequences keyed by byte position
+    pub color_attrs: Vec<(usize, String)>,
     pub links: Vec<(usize, usize, String)>,
     frag: Vec<(String, usize)>,
     state: Attributes,
@@ -74,6 +76,7 @@ impl Epub {
                 text: String::new(),
                 lines: Vec::new(),
                 attrs: vec![(0, Attribute::Reset, state)],
+                color_attrs: Vec::new(),
                 state,
                 links: Vec::new(),
                 frag: Vec::new(),
@@ -272,8 +275,9 @@ fn render(n: Node, c: &mut Chapter, ea: &mut Epub, chapterpath: &str) {
             ea,
             chapterpath,
         ),
-        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+        tag @ ("h1" | "h2" | "h3" | "h4" | "h5" | "h6") => {
             c.text.push_str("\n ");
+            let color_start = c.text.len();
             c.render(
                 n,
                 Attribute::Bold,
@@ -281,7 +285,21 @@ fn render(n: Node, c: &mut Chapter, ea: &mut Epub, chapterpath: &str) {
                 ea,
                 chapterpath,
             );
+            let color_end = c.text.len();
             c.text.push_str("\n\n");
+            // Catppuccin Mocha palette: h1 mauve → h6 peach
+            let (r, g, b) = match tag {
+                "h1" => (203, 166, 247), // mauve
+                "h2" => (137, 180, 250), // blue
+                "h3" => (148, 226, 213), // teal
+                "h4" => (166, 227, 161), // green
+                "h5" => (249, 226, 175), // yellow
+                _    => (250, 179, 135), // peach (h6)
+            };
+            let on  = format!("{}", SetForegroundColor(Color::Rgb { r, g, b }));
+            let off = format!("{}", SetForegroundColor(Color::Reset));
+            c.color_attrs.push((color_start, on));
+            c.color_attrs.push((color_end, off));
         }
         "blockquote" | "div" | "p" | "tr" => {
             // TODO compress newlines

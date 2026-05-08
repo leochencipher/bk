@@ -10,6 +10,7 @@ use crossterm::{
     terminal,
 };
 use serde::{Deserialize, Serialize};
+use chrono::Local;
 use std::{
     cmp::min,
     collections::HashMap,
@@ -98,7 +99,9 @@ fn compute_line_offsets(chapters: &[epub::Chapter]) -> Vec<usize> {
     offsets
 }
 
-fn build_status(bk: &Bk) -> String {
+/// Returns (left_section, right_section, total_width) for the status bar.
+/// Caller is responsible for padding and coloring.
+fn build_status(bk: &Bk) -> (String, String) {
     let chapter_lines = bk.chapters[bk.chapter].lines.len();
     let total_pages = ((chapter_lines as f32) / (bk.rows as f32)).ceil() as usize;
     let page = total_pages
@@ -112,21 +115,11 @@ fn build_status(bk: &Bk) -> String {
         0
     };
 
+    let now = Local::now().format("%H:%M").to_string();
     let title = &bk.chapters[bk.chapter].title;
-    let right = format!("  pg {}/{}  {}%", page, total_pages, pct);
-    let width = bk.cols as usize;
-    let max_title = width.saturating_sub(right.len());
-    let title_display = if title.chars().count() > max_title {
-        title
-            .chars()
-            .take(max_title.saturating_sub(1))
-            .collect::<String>()
-            + "…"
-    } else {
-        title.clone()
-    };
-    let pad = width.saturating_sub(title_display.chars().count() + right.len());
-    format!("{}{}{}", title_display, " ".repeat(pad), right)
+    let left = format!(" 📖 {}", title);
+    let right = format!("📄 {}/{} │ 📊 {}% │ 🕐 {} ", page, total_pages, pct, now);
+    (left, right)
 }
 
 struct SearchArgs {
@@ -321,13 +314,44 @@ impl Bk<'_> {
                 }
             }
             // Status bar on the last terminal row
-            let status = build_status(bk);
+            let (left, right) = build_status(bk);
+            let width = bk.cols as usize;
+            // emoji are double-width; count display width for padding
+            let left_w = left.width_cjk();
+            let right_w = right.width_cjk();
+            let pad = width.saturating_sub(left_w + right_w);
+            // truncate title if needed
+            let left_display = if left_w > width.saturating_sub(right_w + 1) {
+                let avail = width.saturating_sub(right_w + 2);
+                left.chars()
+                    .scan(0usize, |acc, c| {
+                        *acc += c.width_cjk().unwrap_or(1);
+                        Some((*acc, c))
+                    })
+                    .take_while(|(w, _)| *w <= avail)
+                    .map(|(_, c)| c)
+                    .collect::<String>()
+                    + "…"
+            } else {
+                left.clone()
+            };
             queue!(
                 stdout,
                 cursor::MoveTo(0, bk.rows as u16),
-                Print(style::Attribute::Reverse),
-                Print(&status),
-                Print(style::Attribute::NoReverse),
+                // Purple/indigo background with bright white text for left (title) section
+                SetColors(Colors::new(
+                    Color::Rgb { r: 249, g: 226, b: 175 }, // Catppuccin yellow
+                    Color::Rgb { r: 30, g: 30, b: 46 },    // dark base
+                )),
+                Print(&left_display),
+                Print(" ".repeat(pad)),
+                // Teal/cyan accent for right section
+                SetColors(Colors::new(
+                    Color::Rgb { r: 137, g: 220, b: 235 }, // Catppuccin sky
+                    Color::Rgb { r: 30, g: 30, b: 46 },
+                )),
+                Print(&right),
+                ResetColor,
             )
             .unwrap();
 

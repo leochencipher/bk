@@ -355,7 +355,15 @@ impl View for Page {
                 .iter()
                 .take_while(|x| x.0 <= text_end)
                 .map(|x| (x.0, x.1.to_string()));
-            head.into_iter().chain(tail).peekable()
+            let colors = c
+                .color_attrs
+                .iter()
+                .filter(|(pos, _)| *pos >= text_start && *pos <= text_end)
+                .cloned();
+            let mut all: Vec<(usize, String)> =
+                head.into_iter().chain(tail).chain(colors).collect();
+            all.sort_by_key(|x| x.0);
+            all.into_iter().peekable()
         };
 
         let mut attrs: Vec<(usize, String)> = Vec::new();
