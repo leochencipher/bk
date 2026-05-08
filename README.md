@@ -1,7 +1,7 @@
 # bk
 
-bk is a terminal EPUB reader, written in Rust. Forked from <https://github.com/aeosynth/bk>. I use this as a way to learn Rust (expecting ugly code :( ). Added couple of features,
-image support by [viuer](https://github.com/atanunq/viuer).
+bk is a terminal EPUB reader, written in Rust. Forked from <https://github.com/aeosynth/bk>.
+Supports EPUB 2/3 with vim-style navigation, images, incremental search, and bookmarks.
 
 # Features
 
@@ -11,13 +11,15 @@ image support by [viuer](https://github.com/atanunq/viuer).
 - Vim bindings
 - Incremental search
 - Bookmarks
+- Image display
 
 # Install
 
 from github:
 
     git clone https://github.com/leochencipher/bk
-    cargo install --path bk
+    cd bk
+    cargo install --path .
 
 # Usage
 
