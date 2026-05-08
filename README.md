@@ -12,6 +12,7 @@ Supports EPUB 2/3 with vim-style navigation, images, incremental search, and boo
 - Incremental search
 - Bookmarks
 - Image display
+- Cross-device sync (via content-hash + configurable save path)
 
 # Install
 
@@ -23,7 +24,7 @@ from github:
 
 # Usage
 
-    Usage: bk [<path>] [-m] [-t] [-w <width>]
+    Usage: bk [<path>] [-m] [-t] [-s <save_path>] [-w <width>]
 
     read a book
 
@@ -32,10 +33,19 @@ from github:
       --fg              foreground color (eg f8f8f2)
       -m, --meta        print metadata and exit
       -t, --toc         start with table of contents open
+      -s, --save-path   save path for reading progress (default: ~/book/bk)
       -w, --width       characters per line
       --help            display usage information
 
 Running `bk` without a path will load the most recent EPUB.
+
+## Cross-device sync
+
+`bk` identifies books by SHA-256 content hash instead of file path, so the same EPUB opened from different directories on different machines is recognized as the same book. Set a shared sync directory for the save file:
+
+    bk --save-path ~/Sync/bk/books.ron /path/to/book.epub
+
+Then point Syncthing (or any sync tool) at `~/Sync/bk/` and your reading progress follows you everywhere. The save file is in human-readable RON format, so you can inspect or manually merge it if needed.
 
 Type any function key (eg <kbd>F1</kbd>) to see the keybinds.
 

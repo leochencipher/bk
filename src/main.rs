@@ -11,6 +11,7 @@ use crossterm::{
 };
 use serde::{Deserialize, Serialize};
 use chrono::Local;
+use sha2::{Sha256, Digest};
 use std::{
     cmp::min,
     collections::HashMap,
@@ -97,6 +98,15 @@ fn compute_line_offsets(chapters: &[epub::Chapter]) -> Vec<usize> {
     }
     offsets.push(acc); // offsets[chapters.len()] = total line count
     offsets
+}
+
+/// Compute SHA-256 hash of a file, returned as a hex string.
+fn hash_file(path: &str) -> io::Result<String> {
+    use std::fs::File;
+    let mut hasher = Sha256::new();
+    let mut reader = File::open(path)?;
+    std::io::copy(&mut reader, &mut hasher)?;
+    Ok(hex::encode(hasher.finalize()))
 }
 
 /// Returns (left_section, right_section, total_width) for the status bar.
@@ -493,6 +503,10 @@ struct Args {
     /// characters per line
     #[argh(option, short = 'w', default = "75")]
     width: u16,
+
+    /// save path for reading progress (default: ~/.local/share/bk)
+    #[argh(option, short = 's')]
+    save_path: Option<String>,
 }
 
 struct Props {
@@ -505,8 +519,8 @@ struct Props {
 
 #[derive(Default, Deserialize, Serialize)]
 struct Save {
-    last: String,
-    files: HashMap<String, (usize, usize)>,
+    last: String,  // book hash of last opened book
+    files: HashMap<String, (usize, usize)>,  // book_hash → (chapter, byte_offset)
 }
 
 struct State {
@@ -518,18 +532,25 @@ struct State {
 }
 
 fn init() -> Result<State, Box<dyn std::error::Error>> {
-    let save_path = if cfg!(windows) {
-        format!("{}\\bk", env::var("APPDATA")?)
-    } else {
-        format!("{}/.local/share/bk", env::var("HOME")?)
-    };
+    let args: Args = argh::from_env();
+
+    let save_path = args
+        .save_path
+        .clone()
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                format!("{}\\bk", env::var("APPDATA").unwrap())
+            } else {
+                format!("{}/book/bk", env::var("HOME").unwrap())
+            }
+        });
+
     // XXX will silently create a new default save if ron errors but path arg works.
     // revisit if/when stabilizing. ez file format upgrades
     let save: io::Result<Save> = fs::read_to_string(&save_path).and_then(|s| {
         ron::from_str(&s)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid save file"))
     });
-    let args: Args = argh::from_env();
 
     let path = match args.path {
         Some(p) => Some(fs::canonicalize(p)?.to_str().unwrap().to_string()),
@@ -544,10 +565,18 @@ fn init() -> Result<State, Box<dyn std::error::Error>> {
             (s.last.clone(), s, chapter, byte)
         }
         (Ok(s), Some(p)) => {
-            if s.files.contains_key(&p) {
+            // 1) Try hash-based lookup (new format, sync-friendly)
+            let book_hash = hash_file(&p).unwrap_or_default();
+            if let Some(&(chapter, byte)) = s.files.get(&book_hash) {
+                (p, s, chapter, byte)
+            }
+            // 2) Fall back to path-based lookup (old format, backward compat)
+            else if s.files.contains_key(&p) {
                 let &(chapter, byte) = s.files.get(&p).unwrap();
                 (p, s, chapter, byte)
-            } else {
+            }
+            // 3) New book, start from beginning
+            else {
                 (p, s, 0, 0)
             }
         }
@@ -606,11 +635,12 @@ fn main() {
     });
 
     let byte = bk.chapters[bk.chapter].lines[bk.line].0;
+    let book_hash = hash_file(&state.path).unwrap_or_default();
     state
         .save
         .files
-        .insert(state.path.clone(), (bk.chapter, byte));
-    state.save.last = state.path;
+        .insert(book_hash.clone(), (bk.chapter, byte));
+    state.save.last = book_hash;
     let serialized = ron::to_string(&state.save).unwrap();
     fs::write(state.save_path, serialized).unwrap_or_else(|e| {
         println!("error saving state: {}", e);
