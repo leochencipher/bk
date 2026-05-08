@@ -22,9 +22,6 @@ serde = "^1.0"
 unicode-width = "^0.2"
 viuer = { version = "^0.7.1" }
 image = "^0.24"
-kokoro-tiny = { version = "0.1", features = ["playback"] }
-rodio = "0.19"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [dependencies.zip]
 version = "^0.6.6"
