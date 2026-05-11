@@ -56,20 +56,8 @@ impl Epub {
             .unwrap();
         text
     }
-    fn get_chapters(&mut self, spine: Vec<(String, String)>) {
-        for (title, path) in spine {
-            // https://github.com/RazrFalcon/roxmltree/issues/12
-            // UnknownEntityReference for HTML entities
-            let cpath = format!("{}{}", self.rootdir, path);
-            let xml = self.get_text(&cpath);
-            let (chapterpath, _) = cpath.rsplit_once('/').unwrap_or(("", ""));
-            let opt = ParsingOptions { allow_dtd: true };
-            let doc = Document::parse_with_options(&xml, opt);
-            let doc = match doc {
-                Ok(v) => v,
-                Err(_e) => continue,
-            };
-            let body = doc.root_element().last_element_child().unwrap();
+    fn get_chapters(&mut self, spine: Vec<(String, Vec<String>)>) {
+        for (title, paths) in spine {
             let state = Attributes::default();
             let mut c = Chapter {
                 title,
@@ -81,26 +69,41 @@ impl Epub {
                 links: Vec::new(),
                 frag: Vec::new(),
             };
-            render(body, &mut c, self, chapterpath);
+            for path in &paths {
+                // https://github.com/RazrFalcon/roxmltree/issues/12
+                // UnknownEntityReference for HTML entities
+                let cpath = format!("{}{}", self.rootdir, path);
+                let xml = self.get_text(&cpath);
+                let (chapterpath, _) = cpath.rsplit_once('/').unwrap_or(("", ""));
+                let opt = ParsingOptions { allow_dtd: true };
+                let doc = Document::parse_with_options(&xml, opt);
+                let doc = match doc {
+                    Ok(v) => v,
+                    Err(_e) => continue,
+                };
+                let body = doc.root_element().last_element_child().unwrap();
+                let link_start = c.links.len();
+                render(body, &mut c, self, chapterpath);
+                let relative = path.rsplit('/').next().unwrap();
+                self.links
+                    .insert(relative.to_string(), (self.chapters.len(), 0));
+                for (id, pos) in c.frag.drain(..) {
+                    let url = format!("{}#{}", relative, id);
+                    self.links.insert(url, (self.chapters.len(), pos));
+                }
+                for link in c.links[link_start..].iter_mut() {
+                    if link.2.starts_with('#') {
+                        link.2.insert_str(0, relative);
+                    }
+                }
+            }
             if c.text.trim().is_empty() {
                 continue;
-            }
-            let relative = path.rsplit('/').next().unwrap();
-            self.links
-                .insert(relative.to_string(), (self.chapters.len(), 0));
-            for (id, pos) in c.frag.drain(..) {
-                let url = format!("{}#{}", relative, id);
-                self.links.insert(url, (self.chapters.len(), pos));
-            }
-            for link in c.links.iter_mut() {
-                if link.2.starts_with('#') {
-                    link.2.insert_str(0, relative);
-                }
             }
             self.chapters.push(c);
         }
     }
-    fn get_spine(&mut self) -> Vec<(String, String)> {
+    fn get_spine(&mut self) -> Vec<(String, Vec<String>)> {
         let xml = self.get_text("META-INF/container.xml");
         let doc = Document::parse(&xml).unwrap();
         let path = doc
@@ -156,17 +159,28 @@ impl Epub {
             let doc = Document::parse(&xml).unwrap();
             epub2(doc, &mut nav);
         }
-        spine_node
-            .children()
-            .filter(Node::is_element)
-            .enumerate()
-            .map(|(i, n)| {
-                let id = n.attribute("idref").unwrap();
-                let path = manifest.remove(id).unwrap();
-                let label = nav.remove(path).unwrap_or_else(|| i.to_string());
-                (label, path.to_string())
-            })
-            .collect()
+        let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+        let mut pending: Vec<String> = Vec::new();
+
+        for n in spine_node.children().filter(Node::is_element) {
+            let id = n.attribute("idref").unwrap();
+            let path = manifest.remove(id).unwrap().to_string();
+            match nav.remove(path.as_str()) {
+                Some(label) => {
+                    let mut paths: Vec<String> = pending.drain(..).collect();
+                    paths.push(path);
+                    groups.push((label, paths));
+                }
+                None => {
+                    if groups.is_empty() {
+                        pending.push(path);
+                    } else {
+                        groups.last_mut().unwrap().1.push(path);
+                    }
+                }
+            }
+        }
+        groups
     }
 }
 
