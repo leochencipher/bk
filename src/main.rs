@@ -285,34 +285,41 @@ impl Bk<'_> {
                     let buf = bk.imgs.get(url).unwrap();
                     let img = image::load_from_memory(&buf)
                         .expect("Data from stdin could not be decoded.");
-                    // check if the print image trigger's scroll
-                    let ratio: u32 = 2;
-                    let conf = if (img.width() / ratio / (2 * bk.pad() as u32 - 10))
-                        > (img.height() / 2 / ratio / (bk.rows as u32 - last_y as u32))
-                    {
+                    let avail_cols = bk.cols.saturating_sub(bk.max_width + 10) as u32;
+                    let natural_cols = (img.width() / 8).max(1);
+                    let target_cols = (avail_cols * width / 100).min(natural_cols).max(1);
+                    let remaining_rows = (bk.rows as i16 - last_y).max(1) as u32;
+                    // pre-scale image height to correct for viuer's fixed 1:2 cell assumption;
+                    // tune this value: < 1.0 = shorter, > 1.0 = taller
+                    let height_correction: f32 = 0.6;
+                    let corrected_h = ((img.height() as f32 * height_correction) as u32).max(1);
+                    let display_img = img.resize_exact(
+                        img.width(),
+                        corrected_h,
+                        image::imageops::FilterType::Triangle,
+                    );
+                    let est_rows = if img.width() > 0 {
+                        corrected_h * target_cols / img.width() / 2
+                    } else {
+                        remaining_rows
+                    };
+                    let conf = if est_rows <= remaining_rows {
                         Config {
-                            // set offset
                             x: bk.max_width + 10,
                             y: last_y,
-                            // set dimensions
-                            width: Some((min(img.width() / ratio, (2 * bk.pad() - 10) as u32) * width) / 100 + 1),
+                            width: Some(target_cols),
                             ..Default::default()
                         }
                     } else {
                         Config {
-                            // set offset
                             x: bk.max_width + 10,
                             y: last_y,
-                            // set dimensions
-                            height: Some(min(
-                                img.height() / 2 / ratio,
-                                bk.rows as u32 - last_y as u32,
-                            )),
+                            height: Some(remaining_rows),
                             ..Default::default()
                         }
                     };
                     let (_print_width, print_height) =
-                        viuer::print(&img, &conf).expect("Image printing failed.");
+                        viuer::print(&display_img, &conf).expect("Image printing failed.");
                     queue!(
                         stdout,
                         cursor::MoveTo(bk.max_width + 7, last_y as u16),
@@ -439,9 +446,6 @@ impl Bk<'_> {
     }
     fn mark(&mut self, c: char) {
         self.mark.insert(c, (self.chapter, self.line));
-    }
-    fn pad(&self) -> u16 {
-        self.cols.saturating_sub(self.max_width) / 2
     }
 
     fn search(&mut self, args: SearchArgs) -> bool {
