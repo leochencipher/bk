@@ -52,6 +52,9 @@ impl View for Metadata {
         bk.view = &Page;
     }
     fn render(&self, bk: &Bk) -> Vec<String> {
+        if bk.chapters.is_empty() {
+            return vec![String::from("(empty book)")];
+        }
         let lines: Vec<usize> = bk.chapters.iter().map(|c| c.lines.len()).collect();
         let current = lines[..bk.chapter].iter().sum::<usize>() + bk.line;
         let total = lines.iter().sum::<usize>();
@@ -113,6 +116,9 @@ impl Toc {
         self.cursor(bk);
     }
     fn next(&self, bk: &mut Bk, n: usize) {
+        if bk.chapters.is_empty() {
+            return;
+        }
         bk.chapter = min(bk.chapters.len() - 1, bk.chapter + n);
         self.cursor(bk);
     }
@@ -164,6 +170,9 @@ impl View for Toc {
         }
     }
     fn render(&self, bk: &Bk) -> Vec<String> {
+        if bk.chapters.is_empty() {
+            return vec![String::from("(empty book)")];
+        }
         let start = bk.chapter - bk.cursor;
         let end = min(bk.chapters.len(), start + bk.rows);
 
@@ -179,6 +188,9 @@ impl View for Toc {
 pub struct Page;
 impl Page {
     fn next_chapter(&self, bk: &mut Bk) {
+        if bk.chapters.is_empty() {
+            return;
+        }
         if bk.chapter < bk.chapters.len() - 1 {
             bk.chapter += 1;
             bk.line = 0;
@@ -191,6 +203,9 @@ impl Page {
         }
     }
     fn scroll_down(&self, bk: &mut Bk, n: usize) {
+        if bk.chapters.is_empty() {
+            return;
+        }
         if bk.line + bk.rows < bk.chapters[bk.chapter].lines.len() {
             bk.line += n;
         } else {
@@ -198,6 +213,9 @@ impl Page {
         }
     }
     fn scroll_up(&self, bk: &mut Bk, n: usize) {
+        if bk.chapters.is_empty() {
+            return;
+        }
         if bk.line > 0 {
             bk.line = bk.line.saturating_sub(n);
         } else if bk.chapter > 0 {
@@ -206,6 +224,9 @@ impl Page {
         }
     }
     fn click(&self, bk: &mut Bk, e: MouseEvent) {
+        if bk.chapters.is_empty() {
+            return;
+        }
         let c = &bk.chapters[bk.chapter];
         let line = bk.line + e.row as usize;
 
@@ -290,6 +311,9 @@ impl View for Page {
                 });
             }
             End | Char('G') => {
+                if bk.chapters.is_empty() {
+                    return;
+                }
                 bk.mark('\'');
                 bk.line = bk.chapters[bk.chapter].lines.len().saturating_sub(bk.rows);
             }
@@ -311,10 +335,16 @@ impl View for Page {
         }
     }
     fn on_resize(&self, bk: &mut Bk) {
+        if bk.chapters.is_empty() {
+            return;
+        }
         // lazy
         bk.line = min(bk.line, bk.chapters[bk.chapter].lines.len() - 1);
     }
     fn render(&self, bk: &Bk) -> Vec<String> {
+        if bk.chapters.is_empty() {
+            return vec![String::from("(empty book)")];
+        }
         let c = &bk.chapters[bk.chapter];
         let last_line = min(bk.line + bk.rows, c.lines.len());
         let text_start = c.lines[bk.line].0;

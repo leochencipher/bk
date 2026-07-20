@@ -112,6 +112,9 @@ fn hash_file(path: &str) -> io::Result<String> {
 /// Returns (left_section, right_section, total_width) for the status bar.
 /// Caller is responsible for padding and coloring.
 fn build_status(bk: &Bk) -> (String, String) {
+    if bk.chapters.is_empty() {
+        return (String::from(" 📖 (empty)"), String::new());
+    }
     let chapter_lines = bk.chapters[bk.chapter].lines.len();
     let total_pages = ((chapter_lines as f32) / (bk.rows as f32)).ceil() as usize;
     let page = total_pages
@@ -425,13 +428,21 @@ impl Bk<'_> {
         terminal::disable_raw_mode()
     }
     fn jump(&mut self, (c, l): (usize, usize)) {
+        if self.chapters.is_empty() {
+            return;
+        }
         self.mark('\'');
-        self.chapter = c;
-        self.line = l;
+        self.chapter = c.min(self.chapters.len() - 1);
+        self.line = l.min(self.chapters[self.chapter].lines.len().saturating_sub(1));
     }
     fn jump_byte(&mut self, c: usize, byte: usize) {
-        self.chapter = c;
-        self.line = match self.chapters[c]
+        if self.chapters.is_empty() {
+            self.chapter = 0;
+            self.line = 0;
+            return;
+        }
+        self.chapter = c.min(self.chapters.len() - 1);
+        self.line = match self.chapters[self.chapter]
             .lines
             .binary_search_by_key(&byte, |&(a, _)| a)
         {
@@ -440,15 +451,21 @@ impl Bk<'_> {
         }
     }
     fn jump_reset(&mut self) {
+        if self.chapters.is_empty() {
+            return;
+        }
         let &(c, l) = self.mark.get(&'\'').unwrap();
-        self.chapter = c;
-        self.line = l;
+        self.chapter = c.min(self.chapters.len() - 1);
+        self.line = l.min(self.chapters[self.chapter].lines.len().saturating_sub(1));
     }
     fn mark(&mut self, c: char) {
         self.mark.insert(c, (self.chapter, self.line));
     }
 
     fn search(&mut self, args: SearchArgs) -> bool {
+        if self.chapters.is_empty() {
+            return false;
+        }
         let (start, end) = self.chapters[self.chapter].lines[self.line];
         match args.dir {
             Direction::Next => {
@@ -638,13 +655,15 @@ fn main() {
         exit(1);
     });
 
-    let byte = bk.chapters[bk.chapter].lines[bk.line].0;
-    let book_hash = hash_file(&state.path).unwrap_or_default();
-    state
-        .save
-        .files
-        .insert(book_hash.clone(), (bk.chapter, byte));
-    state.save.last = book_hash;
+    if !bk.chapters.is_empty() {
+        let byte = bk.chapters[bk.chapter].lines[bk.line].0;
+        let book_hash = hash_file(&state.path).unwrap_or_default();
+        state
+            .save
+            .files
+            .insert(book_hash.clone(), (bk.chapter, byte));
+        state.save.last = book_hash;
+    }
     let serialized = ron::to_string(&state.save).unwrap();
     fs::write(state.save_path, serialized).unwrap_or_else(|e| {
         println!("error saving state: {}", e);
