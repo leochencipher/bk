@@ -28,6 +28,8 @@ mod view;
 use view::{Page, Toc, View};
 
 mod epub;
+mod theme;
+use theme::{Theme, THEMES, find_theme};
 
 fn wrap(text: &str, max_cols: usize) -> Vec<(usize, usize)> {
     let mut lines = Vec::new();
@@ -100,6 +102,98 @@ fn compute_line_offsets(chapters: &[epub::Chapter]) -> Vec<usize> {
     offsets
 }
 
+// ── nested TOC ──
+
+#[derive(Clone)]
+pub(crate) struct TocItem {
+    pub title: String,
+    pub chapter: usize,
+    pub depth: usize,
+    pub has_children: bool,
+    pub is_expanded: bool,
+    pub is_last: bool,
+    pub ancestors_last: Vec<bool>,
+    pub toc_idx: usize,
+}
+
+fn count_toc(tree: &[epub::TocEntry]) -> usize {
+    tree.iter().map(|e| 1 + count_toc(&e.children)).sum()
+}
+
+pub(crate) fn rebuild_toc_visible(
+    tree: &[epub::TocEntry],
+    expanded: &[bool],
+    path_to_chapter: &HashMap<String, usize>,
+) -> Vec<TocItem> {
+    fn dfs(
+        entries: &[epub::TocEntry],
+        expanded: &[bool],
+        path_to_chapter: &HashMap<String, usize>,
+        idx: &mut usize,
+        depth: usize,
+        ancestors_last: Vec<bool>,
+        visible: &mut Vec<TocItem>,
+    ) {
+        for (i, entry) in entries.iter().enumerate() {
+            let my_idx = *idx;
+            *idx += 1;
+            let is_last = i == entries.len() - 1;
+            let chapter = path_to_chapter.get(&entry.path).copied().unwrap_or(0);
+            let mut my_ancestors = ancestors_last.clone();
+            my_ancestors.push(is_last);
+            let is_expanded = expanded.get(my_idx).copied().unwrap_or(true);
+            visible.push(TocItem {
+                title: entry.title.clone(),
+                chapter,
+                depth,
+                has_children: !entry.children.is_empty(),
+                is_expanded,
+                is_last,
+                ancestors_last: ancestors_last.clone(),
+                toc_idx: my_idx,
+            });
+            if is_expanded && !entry.children.is_empty() {
+                dfs(&entry.children, expanded, path_to_chapter, idx, depth + 1, my_ancestors, visible);
+            }
+        }
+    }
+    let mut visible = Vec::new();
+    let mut idx = 0;
+    dfs(tree, expanded, path_to_chapter, &mut idx, 0, vec![], &mut visible);
+    visible
+}
+
+/// Expand ancestors of the current chapter so it is visible in the TOC.
+pub(crate) fn ensure_chapter_visible(bk: &mut Bk) {
+    fn visit(
+        tree: &[epub::TocEntry],
+        expanded: &mut [bool],
+        path_to_chapter: &HashMap<String, usize>,
+        target: usize,
+        idx: &mut usize,
+    ) -> bool {
+        for entry in tree {
+            let my_idx = *idx;
+            *idx += 1;
+            if path_to_chapter.get(&entry.path).copied() == Some(target) {
+                return true;
+            }
+            if !entry.children.is_empty()
+                && visit(&entry.children, expanded, path_to_chapter, target, idx)
+            {
+                expanded[my_idx] = true;
+                return true;
+            }
+        }
+        false
+    }
+    let mut idx = 0;
+    if visit(&bk.toc_tree, &mut bk.toc_expanded, &bk.path_to_chapter, bk.chapter, &mut idx) {
+        bk.toc_visible =
+            rebuild_toc_visible(&bk.toc_tree, &bk.toc_expanded, &bk.path_to_chapter);
+    }
+}
+
 /// Compute SHA-256 hash of a file, returned as a hex string.
 fn hash_file(path: &str) -> io::Result<String> {
     use std::fs::File;
@@ -157,17 +251,25 @@ pub struct Bk<'a> {
     links: HashMap<String, (usize, usize)>,
     // layout
     colors: Colors,
+    cli_fg: Option<Color>,
+    cli_bg: Option<Color>,
     cols: u16,
     rows: usize,
     max_width: u16,
+    theme: Theme,
     // view state
     view: &'a dyn View,
-    cursor: usize,
+    toc_cursor: usize,
     dir: Direction,
     meta: Vec<String>,
     query: String,
     imgs: HashMap<String, Vec<u8>>,
     chapter_line_offsets: Vec<usize>,
+    // nested TOC
+    toc_tree: Vec<epub::TocEntry>,
+    toc_expanded: Vec<bool>,
+    toc_visible: Vec<TocItem>,
+    path_to_chapter: HashMap<String, usize>,
 }
 
 impl Bk<'_> {
@@ -195,6 +297,15 @@ impl Bk<'_> {
 
         let chapter_line_offsets = compute_line_offsets(&chapters);
 
+        let fg = args.cli_fg.unwrap_or(args.theme.fg);
+        let bg = args.cli_bg.unwrap_or(args.theme.bg);
+
+        let toc_tree = epub.toc_tree;
+        let path_to_chapter = epub.path_to_chapter;
+        let toc_count = count_toc(&toc_tree);
+        let toc_expanded = vec![true; toc_count.max(1)];
+        let toc_visible = rebuild_toc_visible(&toc_tree, &toc_expanded, &path_to_chapter);
+
         let mut bk = Bk {
             quit: false,
             dirty: true,
@@ -203,17 +314,24 @@ impl Bk<'_> {
             line: 0,
             mark: HashMap::new(),
             links: epub.links,
-            colors: args.colors,
+            colors: Colors::new(fg, bg),
+            cli_fg: args.cli_fg,
+            cli_bg: args.cli_bg,
             cols,
             rows: (rows as usize).saturating_sub(1).max(1),
             max_width: args.width,
+            theme: args.theme,
             view: if args.toc { &Toc } else { &Page },
-            cursor: 0,
+            toc_cursor: 0,
             dir: Direction::Next,
             meta,
             query: String::new(),
             imgs,
             chapter_line_offsets,
+            toc_tree,
+            toc_expanded,
+            toc_visible,
+            path_to_chapter,
         };
 
         bk.jump_byte(args.chapter, args.byte);
@@ -249,23 +367,15 @@ impl Bk<'_> {
                             stdout,
                             cursor::MoveTo(5, i as u16),
                             SetColors(Colors::new(
-                                Color::Rgb {
-                                    r: 250,
-                                    g: 179,
-                                    b: 135
-                                },
-                                Color::Rgb {
-                                    r: 49,
-                                    g: 50,
-                                    b: 68
-                                }
+                                bk.theme.heading_accent_fg,
+                                bk.theme.heading_accent_bg,
                             )),
                             Print(format!(
                                 "{}{}",
                                 &line[3..],
                                 " ".repeat(bk.max_width as usize - curlen + 11)
                             )),
-                            ResetColor
+                            SetColors(bk.colors)
                         )
                         .unwrap();
                     } else {
@@ -358,24 +468,22 @@ impl Bk<'_> {
             queue!(
                 stdout,
                 cursor::MoveTo(0, bk.rows as u16),
-                // Purple/indigo background with bright white text for left (title) section
                 SetColors(Colors::new(
-                    Color::Rgb { r: 249, g: 226, b: 175 }, // Catppuccin yellow
-                    Color::Rgb { r: 30, g: 30, b: 46 },    // dark base
+                    bk.theme.status_left_fg,
+                    bk.theme.status_left_bg,
                 )),
                 Print(&left_display),
                 Print(" ".repeat(pad)),
-                // Teal/cyan accent for right section
                 SetColors(Colors::new(
-                    Color::Rgb { r: 137, g: 220, b: 235 }, // Catppuccin sky
-                    Color::Rgb { r: 30, g: 30, b: 46 },
+                    bk.theme.status_right_fg,
+                    bk.theme.status_right_bg,
                 )),
                 Print(&right),
                 ResetColor,
             )
             .unwrap();
 
-            queue!(stdout, cursor::MoveTo(5, bk.cursor as u16)).unwrap();
+            queue!(stdout, cursor::MoveTo(5, bk.toc_cursor as u16)).unwrap();
             stdout.flush().unwrap();
         };
 
@@ -462,6 +570,22 @@ impl Bk<'_> {
         self.mark.insert(c, (self.chapter, self.line));
     }
 
+    fn next_theme(&mut self) {
+        let idx = THEMES
+            .iter()
+            .position(|t| t.name == self.theme.name)
+            .unwrap_or(0);
+        self.theme = THEMES[(idx + 1) % THEMES.len()];
+        self.apply_colors();
+    }
+
+    fn apply_colors(&mut self) {
+        self.colors = Colors::new(
+            self.cli_fg.unwrap_or(self.theme.fg),
+            self.cli_bg.unwrap_or(self.theme.bg),
+        );
+    }
+
     fn search(&mut self, args: SearchArgs) -> bool {
         if self.chapters.is_empty() {
             return false;
@@ -528,14 +652,20 @@ struct Args {
     /// save path for reading progress (default: ~/.local/share/bk)
     #[argh(option, short = 's')]
     save_path: Option<String>,
+
+    /// color theme: catppuccin-mocha, catppuccin-latte, solarized-dark, nord, gruvbox-dark
+    #[argh(option, short = 'T')]
+    theme: Option<String>,
 }
 
 struct Props {
-    colors: Colors,
+    cli_fg: Option<Color>,
+    cli_bg: Option<Color>,
     chapter: usize,
     byte: usize,
     width: u16,
     toc: bool,
+    theme: Theme,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -604,22 +734,19 @@ fn init() -> Result<State, Box<dyn std::error::Error>> {
     };
 
     // XXX oh god what
-    let fg = args
-        .fg
-        .map(|s| Rgb {
-            r: u8::from_str_radix(&s[0..2], 16).unwrap(),
-            g: u8::from_str_radix(&s[2..4], 16).unwrap(),
-            b: u8::from_str_radix(&s[4..6], 16).unwrap(),
-        })
-        .unwrap_or(style::Color::Reset);
-    let bg = args
-        .bg
-        .map(|s| Rgb {
-            r: u8::from_str_radix(&s[0..2], 16).unwrap(),
-            g: u8::from_str_radix(&s[2..4], 16).unwrap(),
-            b: u8::from_str_radix(&s[4..6], 16).unwrap(),
-        })
-        .unwrap_or(style::Color::Reset);
+    let cli_fg = args.fg.map(|s| Rgb {
+        r: u8::from_str_radix(&s[0..2], 16).unwrap(),
+        g: u8::from_str_radix(&s[2..4], 16).unwrap(),
+        b: u8::from_str_radix(&s[4..6], 16).unwrap(),
+    });
+    let cli_bg = args.bg.map(|s| Rgb {
+        r: u8::from_str_radix(&s[0..2], 16).unwrap(),
+        g: u8::from_str_radix(&s[2..4], 16).unwrap(),
+        b: u8::from_str_radix(&s[4..6], 16).unwrap(),
+    });
+
+    let theme_name = args.theme.as_deref().unwrap_or("catppuccin-mocha");
+    let theme = THEMES[find_theme(theme_name).unwrap_or(0)];
 
     Ok(State {
         path,
@@ -627,11 +754,13 @@ fn init() -> Result<State, Box<dyn std::error::Error>> {
         save_path,
         meta: args.meta,
         bk: Props {
-            colors: Colors::new(fg, bg),
+            cli_fg,
+            cli_bg,
             chapter,
             byte,
             width: args.width,
             toc: args.toc,
+            theme,
         },
     })
 }

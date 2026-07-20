@@ -1,4 +1,4 @@
-use crossterm::style::{Attribute, Attributes, Color, SetForegroundColor};
+use crossterm::style::{Attribute, Attributes};
 use roxmltree::{Document, Node, ParsingOptions};
 use std::{
     collections::HashMap,
@@ -17,8 +17,17 @@ pub struct Chapter {
     // raw ANSI color-change sequences keyed by byte position
     pub color_attrs: Vec<(usize, String)>,
     pub links: Vec<(usize, usize, String)>,
+    // (start, end, level 0-5) for heading spans
+    pub heading_spans: Vec<(usize, usize, usize)>,
     frag: Vec<(String, usize)>,
     state: Attributes,
+}
+
+#[derive(Clone, Debug)]
+pub struct TocEntry {
+    pub title: String,
+    pub path: String,
+    pub children: Vec<TocEntry>,
 }
 
 pub struct Epub {
@@ -28,6 +37,8 @@ pub struct Epub {
     pub links: HashMap<String, (usize, usize)>,
     pub meta: String,
     pub imgs: HashMap<String, Vec<u8>>,
+    pub toc_tree: Vec<TocEntry>,
+    pub path_to_chapter: HashMap<String, usize>,
 }
 
 impl Epub {
@@ -40,6 +51,8 @@ impl Epub {
             links: HashMap::new(),
             meta: String::new(),
             imgs: HashMap::new(),
+            toc_tree: Vec::new(),
+            path_to_chapter: HashMap::new(),
         };
         let chapters = epub.get_spine();
         if !meta {
@@ -67,6 +80,7 @@ impl Epub {
                 color_attrs: Vec::new(),
                 state,
                 links: Vec::new(),
+                heading_spans: Vec::new(),
                 frag: Vec::new(),
             };
             for path in &paths {
@@ -151,16 +165,17 @@ impl Epub {
                 .unwrap();
             let xml = self.get_text(&format!("{}{}", self.rootdir, path));
             let doc = Document::parse(&xml).unwrap();
-            epub3(doc, &mut nav);
+            epub3(doc, &mut self.toc_tree, &mut nav);
         } else {
             let id = spine_node.attribute("toc").unwrap_or("ncx");
             let path = manifest.get(id).unwrap();
             let xml = self.get_text(&format!("{}{}", self.rootdir, path));
             let doc = Document::parse(&xml).unwrap();
-            epub2(doc, &mut nav);
+            epub2(doc, &mut self.toc_tree, &mut nav);
         }
         let mut groups: Vec<(String, Vec<String>)> = Vec::new();
         let mut pending: Vec<String> = Vec::new();
+        let mut chapter_idx = 0usize;
 
         for n in spine_node.children().filter(Node::is_element) {
             let id = n.attribute("idref").unwrap();
@@ -168,14 +183,19 @@ impl Epub {
             match nav.remove(path.as_str()) {
                 Some(label) => {
                     let mut paths: Vec<String> = pending.drain(..).collect();
-                    paths.push(path);
+                    paths.push(path.clone());
                     groups.push((label, paths));
+                    for p in &groups.last().unwrap().1 {
+                        self.path_to_chapter.insert(p.clone(), chapter_idx);
+                    }
+                    chapter_idx += 1;
                 }
                 None => {
                     if groups.is_empty() {
-                        pending.push(path);
+                        pending.push(path.clone());
                     } else {
-                        groups.last_mut().unwrap().1.push(path);
+                        groups.last_mut().unwrap().1.push(path.clone());
+                        self.path_to_chapter.insert(path, chapter_idx.saturating_sub(1));
                     }
                 }
             }
@@ -291,7 +311,7 @@ fn render(n: Node, c: &mut Chapter, ea: &mut Epub, chapterpath: &str) {
         ),
         tag @ ("h1" | "h2" | "h3" | "h4" | "h5" | "h6") => {
             c.text.push_str("\n ");
-            let color_start = c.text.len();
+            let start = c.text.len();
             c.render(
                 n,
                 Attribute::Bold,
@@ -299,21 +319,17 @@ fn render(n: Node, c: &mut Chapter, ea: &mut Epub, chapterpath: &str) {
                 ea,
                 chapterpath,
             );
-            let color_end = c.text.len();
+            let end = c.text.len();
             c.text.push_str("\n\n");
-            // Catppuccin Mocha palette: h1 mauve → h6 peach
-            let (r, g, b) = match tag {
-                "h1" => (203, 166, 247), // mauve
-                "h2" => (137, 180, 250), // blue
-                "h3" => (148, 226, 213), // teal
-                "h4" => (166, 227, 161), // green
-                "h5" => (249, 226, 175), // yellow
-                _    => (250, 179, 135), // peach (h6)
+            let level = match tag {
+                "h1" => 0,
+                "h2" => 1,
+                "h3" => 2,
+                "h4" => 3,
+                "h5" => 4,
+                _ => 5,
             };
-            let on  = format!("{}", SetForegroundColor(Color::Rgb { r, g, b }));
-            let off = format!("{}", SetForegroundColor(Color::Reset));
-            c.color_attrs.push((color_start, on));
-            c.color_attrs.push((color_end, off));
+            c.heading_spans.push((start, end, level));
         }
         "blockquote" | "div" | "p" | "tr" => {
             // TODO compress newlines
@@ -338,56 +354,74 @@ fn render(n: Node, c: &mut Chapter, ea: &mut Epub, chapterpath: &str) {
     }
 }
 
-fn epub2(doc: Document, nav: &mut HashMap<String, String>) {
-    doc.descendants()
+fn epub2(doc: Document, tree: &mut Vec<TocEntry>, flat: &mut HashMap<String, String>) {
+    fn parse_navpoint(n: Node, entries: &mut Vec<TocEntry>, flat: &mut HashMap<String, String>) {
+        let path = n
+            .descendants()
+            .find(|child| child.has_tag_name("content"))
+            .unwrap()
+            .attribute("src")
+            .unwrap()
+            .split('#')
+            .next()
+            .unwrap()
+            .to_string();
+        let title = n
+            .descendants()
+            .find(|child| child.has_tag_name("text"))
+            .unwrap()
+            .text()
+            .unwrap_or("")
+            .to_string();
+        let mut children = Vec::new();
+        for child in n.children().filter(|c| c.has_tag_name("navPoint")) {
+            parse_navpoint(child, &mut children, flat);
+        }
+        flat.entry(path.clone()).or_insert(title.clone());
+        entries.push(TocEntry { title, path, children });
+    }
+    let navmap = doc
+        .descendants()
         .find(|n| n.has_tag_name("navMap"))
-        .unwrap()
-        .descendants()
-        .filter(|n| n.has_tag_name("navPoint"))
-        .for_each(|n| {
-            let path = n
-                .descendants()
-                .find(|n| n.has_tag_name("content"))
-                .unwrap()
-                .attribute("src")
-                .unwrap()
-                .split('#')
-                .next()
-                .unwrap()
-                .to_string();
-            let text = n
-                .descendants()
-                .find(|n| n.has_tag_name("text"))
-                .unwrap()
-                .text()
-                .unwrap_or("")
-                .to_string();
-            // TODO subsections
-            nav.entry(path).or_insert(text);
-        });
+        .unwrap();
+    for n in navmap.children().filter(|n| n.has_tag_name("navPoint")) {
+        parse_navpoint(n, tree, flat);
+    }
 }
-fn epub3(doc: Document, nav: &mut HashMap<String, String>) {
-    doc.descendants()
-        .find(|n| n.has_tag_name("nav"))
-        .unwrap()
-        .children()
-        .find(|n| n.has_tag_name("ol"))
-        .unwrap()
-        .descendants()
-        .filter(|n| n.has_tag_name("a"))
-        .for_each(|n| {
-            let path = n
+fn epub3(doc: Document, tree: &mut Vec<TocEntry>, flat: &mut HashMap<String, String>) {
+    fn parse_ol(ol: Node, entries: &mut Vec<TocEntry>, flat: &mut HashMap<String, String>) {
+        for li in ol.children().filter(|n| n.has_tag_name("li")) {
+            let a = match li.children().find(|n| n.has_tag_name("a")) {
+                Some(a) => a,
+                None => continue,
+            };
+            let path = a
                 .attribute("href")
                 .unwrap()
                 .split('#')
                 .next()
                 .unwrap()
                 .to_string();
-            let text = n
+            let title: String = a
                 .descendants()
                 .filter(Node::is_text)
                 .map(|n| n.text().unwrap())
                 .collect();
-            nav.insert(path, text);
-        });
+            let mut children = Vec::new();
+            if let Some(child_ol) = li.children().find(|n| n.has_tag_name("ol")) {
+                parse_ol(child_ol, &mut children, flat);
+            }
+            flat.entry(path.clone()).or_insert(title.clone());
+            entries.push(TocEntry { title, path, children });
+        }
+    }
+    let nav = doc
+        .descendants()
+        .find(|n| n.has_tag_name("nav"))
+        .unwrap();
+    let ol = nav
+        .children()
+        .find(|n| n.has_tag_name("ol"))
+        .unwrap();
+    parse_ol(ol, tree, flat);
 }

@@ -8,7 +8,7 @@ use crossterm::{
 use std::cmp::{min, Ordering};
 use unicode_width::UnicodeWidthChar;
 
-use crate::{Bk, Direction, SearchArgs};
+use crate::{Bk, Direction, SearchArgs, TocItem, ensure_chapter_visible, rebuild_toc_visible};
 
 pub trait View {
     fn render(&self, bk: &Bk) -> Vec<String>;
@@ -103,32 +103,93 @@ PageDown Right Space f l  Page Down
                        N  Repeat search backward
                       mx  Set mark x
                       'x  Jump to mark x
+
+               TOC View
+          Enter l Space  Expand/Collapse or Go
+              Left h     Collapse parent
+              Right l    Expand or Go
                    "#;
 
         text.lines().map(String::from).collect()
     }
 }
 
+fn toc_prefix(item: &TocItem) -> String {
+    let mut s = String::new();
+    for last in &item.ancestors_last {
+        if *last {
+            s.push_str("    ");
+        } else {
+            s.push_str("│   ");
+        }
+    }
+    if item.is_last {
+        s.push_str("└── ");
+    } else {
+        s.push_str("├── ");
+    }
+    s
+}
+
 pub struct Toc;
 impl Toc {
     fn prev(&self, bk: &mut Bk, n: usize) {
-        bk.chapter = bk.chapter.saturating_sub(n);
-        self.cursor(bk);
+        bk.toc_cursor = bk.toc_cursor.saturating_sub(n);
     }
     fn next(&self, bk: &mut Bk, n: usize) {
-        if bk.chapters.is_empty() {
+        if bk.toc_visible.is_empty() {
             return;
         }
-        bk.chapter = min(bk.chapters.len() - 1, bk.chapter + n);
-        self.cursor(bk);
+        bk.toc_cursor = min(bk.toc_visible.len() - 1, bk.toc_cursor + n);
     }
     fn cursor(&self, bk: &mut Bk) {
-        bk.cursor = min(bk.rows / 2, bk.chapter);
+        ensure_chapter_visible(bk);
+        let pos = bk
+            .toc_visible
+            .iter()
+            .position(|item| item.chapter == bk.chapter)
+            .unwrap_or(0);
+        bk.toc_cursor = min(bk.rows / 2, pos);
+    }
+    fn toggle(&self, bk: &mut Bk) {
+        if bk.toc_visible.is_empty() {
+            return;
+        }
+        let item = &bk.toc_visible[bk.toc_cursor];
+        if !item.has_children {
+            bk.chapter = item.chapter;
+            bk.line = 0;
+            bk.view = &Page;
+            return;
+        }
+        let idx = item.toc_idx;
+        bk.toc_expanded[idx] = !bk.toc_expanded[idx];
+        bk.toc_visible =
+            rebuild_toc_visible(&bk.toc_tree, &bk.toc_expanded, &bk.path_to_chapter);
+        bk.toc_cursor = min(bk.toc_cursor, bk.toc_visible.len().saturating_sub(1));
+    }
+    fn collapse_parent(&self, bk: &mut Bk) {
+        if bk.toc_visible.is_empty() {
+            return;
+        }
+        let item = &bk.toc_visible[bk.toc_cursor];
+        if item.depth == 0 {
+            return;
+        }
+        for i in (0..bk.toc_cursor).rev() {
+            if bk.toc_visible[i].depth < item.depth {
+                bk.toc_expanded[bk.toc_visible[i].toc_idx] = false;
+                bk.toc_visible =
+                    rebuild_toc_visible(&bk.toc_tree, &bk.toc_expanded, &bk.path_to_chapter);
+                bk.toc_cursor = min(i, bk.toc_visible.len().saturating_sub(1));
+                return;
+            }
+        }
     }
     fn click(&self, bk: &mut Bk, row: usize) {
-        let start = bk.chapter - bk.cursor;
-        if start + row < bk.chapters.len() {
-            bk.chapter = start + row;
+        let idx = bk.toc_cursor + row;
+        if idx < bk.toc_visible.len() {
+            bk.chapter = bk.toc_visible[idx].chapter;
             bk.line = 0;
             bk.view = &Page;
         }
@@ -143,44 +204,76 @@ impl View for Toc {
             MouseEventKind::Down(_) => self.click(bk, e.row as usize),
             MouseEventKind::ScrollDown => self.next(bk, 3),
             MouseEventKind::ScrollUp => self.prev(bk, 3),
-            _ => { bk.dirty = false; }
+            _ => {
+                bk.dirty = false;
+            }
         }
     }
     fn on_key(&self, bk: &mut Bk, kc: KeyCode) {
         match kc {
-            Esc | Tab | Left | Char('h' | 'q') => {
+            Esc | Tab | Char('q') => {
                 bk.jump_reset();
-                bk.cursor = 0;
+                bk.toc_cursor = 0;
                 bk.view = &Page;
             }
-            Enter | Right | Char('l') => {
-                bk.line = 0;
-                bk.cursor = 0;
-                bk.view = &Page;
+            Left | Char('h') => {
+                if bk.toc_visible.is_empty() {
+                    return;
+                }
+                if bk.toc_visible[bk.toc_cursor].depth == 0 {
+                    bk.jump_reset();
+                    bk.toc_cursor = 0;
+                    bk.view = &Page;
+                } else {
+                    self.collapse_parent(bk);
+                }
             }
+            Enter | Right | Char('l' | ' ') => self.toggle(bk),
             Down | Char('j') => self.next(bk, 1),
             Up | Char('k') => self.prev(bk, 1),
-            Home | Char('g') => self.prev(bk, bk.chapters.len()),
-            End | Char('G') => self.next(bk, bk.chapters.len()),
+            Home | Char('g') => self.prev(bk, bk.toc_visible.len()),
+            End | Char('G') => self.next(bk, bk.toc_visible.len()),
             PageDown | Char('f') => self.next(bk, bk.rows),
             PageUp | Char('b') => self.prev(bk, bk.rows),
             Char('d') => self.next(bk, bk.rows / 2),
             Char('u') => self.prev(bk, bk.rows / 2),
-            _ => { bk.dirty = false; }
+            _ => {
+                bk.dirty = false;
+            }
         }
     }
     fn render(&self, bk: &Bk) -> Vec<String> {
-        if bk.chapters.is_empty() {
+        if bk.toc_visible.is_empty() {
             return vec![String::from("(empty book)")];
         }
-        let start = bk.chapter - bk.cursor;
-        let end = min(bk.chapters.len(), start + bk.rows);
+        let start = bk.toc_cursor.saturating_sub(bk.rows / 2);
+        let end = min(bk.toc_visible.len(), start + bk.rows);
+        let actual_start = if end - start < bk.rows && start > 0 {
+            start.saturating_sub(bk.rows - (end - start))
+        } else {
+            start
+        };
+        let actual_end = min(bk.toc_visible.len(), actual_start + bk.rows);
 
-        let mut arr = bk.chapters[start..end]
-            .iter()
-            .map(|c| c.title.clone())
-            .collect::<Vec<String>>();
-        arr[bk.cursor] = format!("{}{}{}", Reverse, arr[bk.cursor], NoReverse);
+        let mut arr = Vec::new();
+        for (i, item) in bk.toc_visible[actual_start..actual_end].iter().enumerate() {
+            let prefix = toc_prefix(item);
+            let indicator = if item.has_children {
+                if item.is_expanded {
+                    "▼ "
+                } else {
+                    "▶ "
+                }
+            } else {
+                "  "
+            };
+            let line = format!("{}{}{}", prefix, indicator, item.title);
+            if actual_start + i == bk.toc_cursor {
+                arr.push(format!("{}{}{}", Reverse, line, NoReverse));
+            } else {
+                arr.push(line);
+            }
+        }
         arr
     }
 }
@@ -293,6 +386,7 @@ impl View for Page {
                 bk.view = &Toc;
             }
             F(_) => bk.view = &Help,
+            Char('T') => bk.next_theme(),
             Char('m') => bk.view = &Mark,
             Char('\'') => bk.view = &Jump,
             Char('i') => bk.view = &Metadata,
@@ -354,7 +448,7 @@ impl View for Page {
         if !bk.query.is_empty() {
             let len = bk.query.len();
             let hl_on =
-                SetBackgroundColor(Color::Rgb { r: 250, g: 179, b: 135 }).to_string();
+                SetBackgroundColor(bk.theme.search_highlight).to_string();
             let hl_off = format!(
                 "{}{}",
                 SetForegroundColor(bk.colors.foreground.unwrap_or(Color::Reset)),
@@ -390,8 +484,19 @@ impl View for Page {
                 .iter()
                 .filter(|(pos, _)| *pos >= text_start && *pos <= text_end)
                 .cloned();
+            let heading_colors: Vec<(usize, String)> = c
+                .heading_spans
+                .iter()
+                .filter(|(s, e, _)| *s <= text_end && *e >= text_start)
+                .flat_map(|(s, e, level)| {
+                    let on =
+                        SetForegroundColor(bk.theme.heading_colors[*level]).to_string();
+                    let off = SetForegroundColor(bk.theme.fg).to_string();
+                    vec![(*s, on), (*e, off)]
+                })
+                .collect();
             let mut all: Vec<(usize, String)> =
-                head.into_iter().chain(tail).chain(colors).collect();
+                head.into_iter().chain(tail).chain(colors).chain(heading_colors).collect();
             all.sort_by_key(|x| x.0);
             all.into_iter().peekable()
         };
