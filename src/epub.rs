@@ -156,22 +156,41 @@ impl Epub {
             .for_each(|n| {
                 manifest.insert(n.attribute("id").unwrap(), n.attribute("href").unwrap());
             });
-        if doc.root_element().attribute("version") == Some("3.0") {
+        let toc_path = if doc.root_element().attribute("version") == Some("3.0") {
             let path = manifest_node
                 .children()
                 .find(|n| n.attribute("properties") == Some("nav"))
                 .unwrap()
                 .attribute("href")
-                .unwrap();
+                .unwrap()
+                .to_string();
             let xml = self.get_text(&format!("{}{}", self.rootdir, path));
             let doc = Document::parse(&xml).unwrap();
             epub3(doc, &mut self.toc_tree, &mut nav);
+            path
         } else {
             let id = spine_node.attribute("toc").unwrap_or("ncx");
-            let path = manifest.get(id).unwrap();
+            let path = manifest.get(id).unwrap().to_string();
             let xml = self.get_text(&format!("{}{}", self.rootdir, path));
             let doc = Document::parse(&xml).unwrap();
             epub2(doc, &mut self.toc_tree, &mut nav);
+            path
+        };
+        // Resolve nav paths relative to the nav/NCX document's directory.
+        // Nav hrefs are relative to the nav doc, manifest hrefs are relative to rootdir.
+        if let Some(n) = toc_path.rfind('/') {
+            let base = &toc_path[..=n];
+            nav = nav
+                .into_iter()
+                .map(|(k, v)| (format!("{}{}", base, k), v))
+                .collect();
+            fn resolve_toc_paths(tree: &mut Vec<TocEntry>, prefix: &str) {
+                for entry in tree {
+                    entry.path = format!("{}{}", prefix, entry.path);
+                    resolve_toc_paths(&mut entry.children, prefix);
+                }
+            }
+            resolve_toc_paths(&mut self.toc_tree, base);
         }
         let mut groups: Vec<(String, Vec<String>)> = Vec::new();
         let mut pending: Vec<String> = Vec::new();
