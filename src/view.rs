@@ -67,6 +67,10 @@ impl View for Metadata {
         let mut vec = vec![
             format!("chapter: {}/{}", page, pages),
             format!("total: {:.0}%", progress),
+            format!(
+                "tts: {}",
+                if bk.tts.is_some() { "loaded" } else { "not loaded" }
+            ),
             String::new(),
         ];
         vec.extend_from_slice(&bk.meta);
@@ -87,6 +91,7 @@ impl View for Help {
                        i  Progress and Metadata
                        B  Toggle Bionic Reading
                        F  Toggle Line Focus
+                       s  Speak current sentence (TTS)
 
 PageDown Right Space f l  Page Down
          PageUp Left b h  Page Up
@@ -429,6 +434,16 @@ impl View for Page {
             Char(']') => self.next_chapter(bk),
             Char('B') => { bk.bionic = !bk.bionic; },
             Char('F') => { bk.focus = !bk.focus; },
+            Char('s') => {
+                if bk.tts.is_some() && !bk.chapters.is_empty() {
+                    let chapter = &bk.chapters[bk.chapter];
+                    let line_start = chapter.lines.get(bk.line).map(|r| r.0).unwrap_or(0);
+                    bk.tts_sentences = split_into_sentences(&chapter.text);
+                    bk.tts_sentence_idx = find_sentence_index(&bk.tts_sentences, &chapter.text, line_start);
+                    bk.tts_active = true;
+                    bk.view = &TtsView;
+                }
+            }
             _ => { bk.dirty = false; }
         }
     }
@@ -655,3 +670,193 @@ impl View for Search {
         buf
     }
 }
+
+/// Split text into TTS chunks: normalize whitespace, split on sentence boundaries,
+/// then merge short sentences into longer chunks for natural speech.
+fn split_into_sentences(text: &str) -> Vec<String> {
+    // 1. Normalize: collapse all whitespace runs into single spaces
+    let bytes = text.as_bytes();
+    let mut normalized = String::with_capacity(bytes.len());
+    let mut in_ws = false;
+    for &b in bytes {
+        if matches!(b, b' ' | b'\n' | b'\r' | b'\t') {
+            if !in_ws {
+                normalized.push(' ');
+                in_ws = true;
+            }
+        } else {
+            normalized.push(b as char);
+            in_ws = false;
+        }
+    }
+    let normalized = normalized.trim().to_string();
+    if normalized.is_empty() {
+        return Vec::new();
+    }
+
+    // 2. Split into raw sentences at .!? followed by space/end
+    let bytes = normalized.as_bytes();
+    let mut raw: Vec<String> = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if matches!(bytes[i], b'.' | b'!' | b'?') {
+            let after = i + 1;
+            if after >= bytes.len() || bytes[after] == b' ' {
+                let s = normalized[start..=i].to_string();
+                if !s.is_empty() {
+                    raw.push(s);
+                }
+                start = after + 1; // skip punctuation + space
+                i = start;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    if start < bytes.len() {
+        let s = normalized[start..].to_string();
+        if !s.is_empty() {
+            raw.push(s);
+        }
+    }
+
+    // 3. Merge short sentences into longer chunks (target ~120 chars, max ~280)
+    let target = 120usize;
+    let max_chunk = 280usize;
+    let mut chunks: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for s in raw {
+        if cur.is_empty() {
+            cur = s;
+        } else if cur.len() + 1 + s.len() <= max_chunk && cur.len() < target {
+            cur.push(' ');
+            cur.push_str(&s);
+        } else {
+            chunks.push(cur);
+            cur = s;
+        }
+    }
+    if !cur.is_empty() {
+        chunks.push(cur);
+    }
+
+    chunks
+}
+
+/// Find which chunk index contains `byte_pos` in the original `text`.
+fn find_sentence_index(chunks: &[String], text: &str, byte_pos: usize) -> usize {
+    // Normalize the text the same way as split_into_sentences
+    let bytes = text.as_bytes();
+    let mut normalized = String::with_capacity(bytes.len());
+    let mut in_ws = false;
+    for &b in bytes {
+        if matches!(b, b' ' | b'\n' | b'\r' | b'\t') {
+            if !in_ws {
+                normalized.push(' ');
+                in_ws = true;
+            }
+        } else {
+            normalized.push(b as char);
+            in_ws = false;
+        }
+    }
+    let normalized = normalized.trim().to_string();
+
+    // Find the approximate position in normalized text by counting
+    // non-whitespace bytes up to byte_pos
+    let mut norm_pos = 0usize;
+    let mut orig_pos = 0usize;
+    let mut last_ws = false;
+    while orig_pos < byte_pos && orig_pos < bytes.len() {
+        let b = bytes[orig_pos];
+        if matches!(b, b' ' | b'\n' | b'\r' | b'\t') {
+            if !last_ws {
+                norm_pos += 1; // single space
+                last_ws = true;
+            }
+        } else {
+            norm_pos += 1;
+            last_ws = false;
+        }
+        orig_pos += 1;
+    }
+
+    // Search for each chunk in the normalized text to find the containing one
+    let mut search_from = 0usize;
+    for (i, chunk) in chunks.iter().enumerate() {
+        if let Some(pos) = normalized[search_from..].find(chunk.as_str()) {
+            let abs_pos = search_from + pos;
+            let chunk_end = abs_pos + chunk.len();
+            if norm_pos >= abs_pos && norm_pos <= chunk_end {
+                return i;
+            }
+            search_from = chunk_end + 1;
+        }
+    }
+    chunks.len().saturating_sub(1)
+}
+
+// ── TTS View ────────────────────────────────────────────────────────────────
+
+pub struct TtsView;
+
+impl View for TtsView {
+    fn on_key(&self, bk: &mut Bk, kc: KeyCode) {
+        match kc {
+            Char('s') | Esc => {
+                // Kill afplay if running
+                if let Some(child) = &mut bk.tts_child {
+                    let _ = child.kill();
+                }
+                bk.tts_child = None;
+                bk.tts_active = false;
+                bk.view = &Page;
+            }
+            _ => {}
+        }
+    }
+
+    fn render(&self, bk: &Bk) -> Vec<String> {
+        if bk.tts_sentences.is_empty() {
+            return vec![
+                String::new(),
+                String::from("  (no text to speak)"),
+                String::new(),
+                String::from("  Press s or Esc to exit"),
+            ];
+        }
+
+        let current = &bk.tts_sentences[bk.tts_sentence_idx];
+        let total = bk.tts_sentences.len();
+        let idx_display = bk.tts_sentence_idx + 1;
+
+        // Wrap the current sentence to fit the terminal width
+        let max_width = bk.max_width as usize;
+        let wrapped = crate::wrap(current, max_width);
+
+        let mut vec = Vec::new();
+        vec.push(String::new());
+
+        // Progress line
+        vec.push(format!("  🗣  Sentence {} of {}", idx_display, total));
+        vec.push(String::new());
+
+        // Current sentence
+        for &(a, b) in &wrapped {
+            vec.push(format!("  {}", &current[a..b]));
+        }
+
+        // Fill remaining space and add footer
+        let used = vec.len();
+        let footer = String::from("  Press s or Esc to exit TTS mode");
+        let footer_line = if bk.rows > used + 1 { bk.rows - 1 } else { used };
+        for _ in used..footer_line {
+            vec.push(String::new());
+        }
+        vec.push(footer);
+
+        vec
+    }
+}
+

@@ -18,7 +18,8 @@ use std::{
     env, fs, i16,
     io::{self, Write},
     iter,
-    process::exit,
+    process::{exit, Child},
+    time::Duration,
     u16, u32,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -29,6 +30,7 @@ use view::{Page, Toc, View};
 
 mod epub;
 mod theme;
+mod tts;
 use theme::{Theme, THEMES, find_theme};
 
 fn wrap(text: &str, max_cols: usize) -> Vec<(usize, usize)> {
@@ -273,6 +275,12 @@ pub struct Bk<'a> {
     // reading mode toggles
     pub bionic: bool,
     pub focus: bool,
+    tts: Option<tts::InflectTts>,
+    // TTS mode state
+    pub tts_active: bool,
+    pub tts_sentences: Vec<String>,
+    pub tts_sentence_idx: usize,
+    pub tts_child: Option<Child>,
 }
 
 impl Bk<'_> {
@@ -307,6 +315,16 @@ impl Bk<'_> {
         let path_to_chapter = epub.path_to_chapter;
         let toc_count = count_toc(&toc_tree);
         let toc_expanded = vec![true; toc_count.max(1)];
+
+        // Initialize TTS engine if model directory is available
+        let tts = args.tts_model_dir.as_ref().and_then(|dir| {
+            let model_dir = std::path::Path::new(dir);
+            if model_dir.join("onnx/duration.onnx").exists() {
+                tts::InflectTts::new(model_dir).ok()
+            } else {
+                None
+            }
+        });
         let toc_visible = rebuild_toc_visible(&toc_tree, &toc_expanded, &path_to_chapter);
 
         let mut bk = Bk {
@@ -337,6 +355,11 @@ impl Bk<'_> {
             path_to_chapter,
             bionic: false,
             focus: false,
+            tts,
+            tts_active: false,
+            tts_sentences: Vec::new(),
+            tts_sentence_idx: 0,
+            tts_child: None,
         };
 
         bk.jump_byte(args.chapter, args.byte);
@@ -513,21 +536,52 @@ impl Bk<'_> {
 
         render(self);
         loop {
-            let event = event::read()?;
+            // ── TTS playback check ──
+            if self.tts_active {
+                if let Some(child) = &mut self.tts_child {
+                    match child.try_wait() {
+                        Ok(Some(_)) => {
+                            self.tts_child = None;
+                            self.advance_tts();
+                            self.dirty = true;
+                        }
+                        Ok(None) => {}
+                        Err(_) => {
+                            self.tts_child = None;
+                            self.advance_tts();
+                            self.dirty = true;
+                        }
+                    }
+                } else if self.tts_sentence_idx < self.tts_sentences.len() {
+                    self.start_tts();
+                    self.dirty = true;
+                }
+            }
+
+            // ── read event (poll when TTS active) ──
+            let event = if self.tts_active {
+                if event::poll(Duration::from_millis(100))? {
+                    Some(event::read()?)
+                } else {
+                    None
+                }
+            } else {
+                Some(event::read()?)
+            };
 
             match event {
-                Event::Key(e) => {
+                Some(Event::Key(e)) => {
                     self.dirty = true;
                     self.view.on_key(self, e.code);
                 }
-                Event::Mouse(e) => {
+                Some(Event::Mouse(e)) => {
                     if e.kind == event::MouseEventKind::Moved {
                         continue;
                     }
                     self.dirty = true;
                     self.view.on_mouse(self, e);
                 }
-                Event::Resize(cols, rows) => {
+                Some(Event::Resize(cols, rows)) => {
                     self.dirty = true;
                     self.rows = (rows as usize).saturating_sub(1).max(1);
                     if cols != self.cols {
@@ -539,8 +593,8 @@ impl Bk<'_> {
                     }
                     self.chapter_line_offsets = compute_line_offsets(&self.chapters);
                     self.view.on_resize(self);
-                    // XXX marks aren't updated
                 }
+                None => {}
             }
             if self.quit {
                 break;
@@ -645,6 +699,41 @@ impl Bk<'_> {
         }
     }
 
+    /// Synthesize and play the current TTS sentence.
+    fn start_tts(&mut self) {
+        if self.tts_sentences.is_empty() {
+            return;
+        }
+        let idx = self.tts_sentence_idx;
+        if idx >= self.tts_sentences.len() {
+            return;
+        }
+        let sentence = &self.tts_sentences[idx];
+        let params = tts::SynthesizeParams::default();
+        let output = "/tmp/bk_tts.wav";
+        if let Some(tts) = &mut self.tts {
+            if tts.save(sentence, std::path::Path::new(output), &params).is_ok() {
+                self.tts_child = std::process::Command::new("afplay")
+                    .arg(output)
+                    .spawn()
+                    .ok();
+            }
+        }
+    }
+
+    /// Advance to the next sentence. If at end of chapter, exit TTS mode.
+    fn advance_tts(&mut self) {
+        self.tts_sentence_idx += 1;
+        if self.tts_sentence_idx >= self.tts_sentences.len() {
+            // End of chapter
+            self.tts_child = None;
+            self.tts_active = false;
+            self.view = &Page;
+        } else {
+            self.start_tts();
+        }
+    }
+
 }
 
 #[derive(argh::FromArgs)]
@@ -680,6 +769,9 @@ struct Args {
     /// color theme: catppuccin-mocha, catppuccin-latte, solarized-dark, nord, gruvbox-dark
     #[argh(option, short = 'T')]
     theme: Option<String>,
+    /// directory containing onnx/ subdirectory with TTS models
+    #[argh(option)]
+    tts_model_dir: Option<String>,
 }
 
 struct Props {
@@ -687,6 +779,7 @@ struct Props {
     cli_bg: Option<Color>,
     chapter: usize,
     byte: usize,
+    tts_model_dir: Option<String>,
     width: u16,
     toc: bool,
     theme: Theme,
@@ -785,6 +878,7 @@ fn init() -> Result<State, Box<dyn std::error::Error>> {
             width: args.width,
             toc: args.toc,
             theme,
+            tts_model_dir: args.tts_model_dir,
         },
     })
 }
