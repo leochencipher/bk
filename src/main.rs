@@ -270,6 +270,9 @@ pub struct Bk<'a> {
     toc_expanded: Vec<bool>,
     toc_visible: Vec<TocItem>,
     path_to_chapter: HashMap<String, usize>,
+    // reading mode toggles
+    pub bionic: bool,
+    pub focus: bool,
 }
 
 impl Bk<'_> {
@@ -332,6 +335,8 @@ impl Bk<'_> {
             toc_expanded,
             toc_visible,
             path_to_chapter,
+            bionic: false,
+            focus: false,
         };
 
         bk.jump_byte(args.chapter, args.byte);
@@ -349,6 +354,24 @@ impl Bk<'_> {
         )?;
         terminal::enable_raw_mode()?;
 
+        // Helper to strip ANSI escape sequences from a line for IMG marker detection
+        fn strip_ansi(s: &str) -> String {
+            let mut out = String::with_capacity(s.len());
+            let mut chars = s.chars();
+            while let Some(c) = chars.next() {
+                if c == '\x1b' && chars.clone().next() == Some('[') {
+                    // Skip the escape sequence: \x1b[...m (or other terminators)
+                    chars.next(); // consume '['
+                    while let Some(d) = chars.next() {
+                        if d.is_ascii_alphabetic() { break; }
+                    }
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        }
+
         let mut render = |bk: &Bk| {
             queue!(
                 stdout,
@@ -360,9 +383,10 @@ impl Bk<'_> {
             let mut img_index = 1;
             let mut last_y: i16 = 5;
             for (i, line) in bk.view.render(bk).iter().enumerate() {
-                if !line.starts_with("[IMG][") {
+                let clean = strip_ansi(line);
+                if !clean.starts_with("[IMG][") {
                     let curlen = line.width_cjk();
-                    if line.starts_with(" ") {
+                    if clean.starts_with(" ") {
                         queue!(
                             stdout,
                             cursor::MoveTo(5, i as u16),
@@ -388,13 +412,13 @@ impl Bk<'_> {
                         Print(format!("[{}]", img_index))
                     )
                     .unwrap();
-                    // [IMG][url][width]
-                    let parts: Vec<&str> = line[6..line.len()-1].split("][").collect();
+                    // [IMG][url][width] — use cleaned line for parsing
+                    let parts: Vec<&str> = clean[6..clean.len()-1].split("][").collect();
                     let (url, width_str) = (parts[0], parts[1]);
-                        let width: u32 = width_str.trim_end_matches(|c: char| !c.is_ascii_digit())
-                            .parse()
-                            .unwrap_or(100);
-                        let width = min(width, 100);
+                    let width: u32 = width_str.trim_end_matches(|c: char| !c.is_ascii_digit())
+                        .parse()
+                        .unwrap_or(100);
+                    let width = min(width, 100);
                     let buf = bk.imgs.get(url).unwrap();
                     let img = image::load_from_memory(&buf)
                         .expect("Data from stdin could not be decoded.");

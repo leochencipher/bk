@@ -85,6 +85,8 @@ impl View for Help {
                       Fn  Help
                      Tab  Table of Contents
                        i  Progress and Metadata
+                       B  Toggle Bionic Reading
+                       F  Toggle Line Focus
 
 PageDown Right Space f l  Page Down
          PageUp Left b h  Page Up
@@ -425,6 +427,8 @@ impl View for Page {
             Right | PageDown | Char('f' | 'l' | ' ') => self.scroll_down(bk, bk.rows),
             Char('[') => self.prev_chapter(bk),
             Char(']') => self.next_chapter(bk),
+            Char('B') => { bk.bionic = !bk.bionic; },
+            Char('F') => { bk.focus = !bk.focus; },
             _ => { bk.dirty = false; }
         }
     }
@@ -444,24 +448,28 @@ impl View for Page {
         let text_start = c.lines[bk.line].0;
         let text_end = c.lines[last_line - 1].1;
 
-        let mut search: Vec<(usize, String)> = Vec::new();
-        if !bk.query.is_empty() {
-            let len = bk.query.len();
-            let hl_on =
-                SetBackgroundColor(bk.theme.search_highlight).to_string();
-            let hl_off = format!(
-                "{}{}",
-                SetForegroundColor(bk.colors.foreground.unwrap_or(Color::Reset)),
-                SetBackgroundColor(bk.colors.background.unwrap_or(Color::Reset))
-            );
-            for (pos, _) in c.text[text_start..text_end].match_indices(&bk.query) {
-                search.push((text_start + pos, hl_on.clone()));
-                search.push((text_start + pos + len, hl_off.clone()));
+        // ── search highlights ──
+        let search_attrs: Vec<(usize, String)> = {
+            let mut v = Vec::new();
+            if !bk.query.is_empty() {
+                let len = bk.query.len();
+                let hl_on =
+                    SetBackgroundColor(bk.theme.search_highlight).to_string();
+                let hl_off = format!(
+                    "{}{}",
+                    SetForegroundColor(bk.colors.foreground.unwrap_or(Color::Reset)),
+                    SetBackgroundColor(bk.colors.background.unwrap_or(Color::Reset))
+                );
+                for (pos, _) in c.text[text_start..text_end].match_indices(&bk.query) {
+                    v.push((text_start + pos, hl_on.clone()));
+                    v.push((text_start + pos + len, hl_off.clone()));
+                }
             }
-        }
-        let mut search = search.into_iter().peekable();
+            v
+        };
 
-        let mut base = {
+        // ── base formatting ──
+        let base_attrs: Vec<(usize, String)> = {
             let start = match c.attrs.binary_search_by_key(&text_start, |&x| x.0) {
                 Ok(n) => n,
                 Err(n) => n - 1,
@@ -498,34 +506,79 @@ impl View for Page {
             let mut all: Vec<(usize, String)> =
                 head.into_iter().chain(tail).chain(colors).chain(heading_colors).collect();
             all.sort_by_key(|x| x.0);
-            all.into_iter().peekable()
+            all
         };
 
-        let mut attrs: Vec<(usize, String)> = Vec::new();
-        loop {
-            match (search.peek(), base.peek()) {
-                (None, None) => break,
-                (Some(_), None) => {
-                    attrs.extend(search);
-                    break;
-                }
-                (None, Some(_)) => {
-                    attrs.extend(base);
-                    break;
-                }
-                (Some(_), Some(_)) => {
-                    let s_pos = search.peek().unwrap().0;
-                    let b_pos = base.peek().unwrap().0;
-                    if s_pos < b_pos {
-                        attrs.push(search.next().unwrap());
-                    } else {
-                        attrs.push(base.next().unwrap());
+        // ── bionic reading (pivot letter color) ──
+        let bionic_attrs: Vec<(usize, String)> = {
+            let mut v = Vec::new();
+            if bk.bionic {
+                let bionic_on = SetForegroundColor(bk.theme.bionic_fg).to_string();
+                let bionic_off = SetForegroundColor(bk.theme.fg).to_string();
+                let mut byte = text_start;
+                while byte < text_end {
+                    let ch = c.text.as_bytes()[byte];
+                    if ch.is_ascii_whitespace() || ch.is_ascii_punctuation() {
+                        byte += 1;
+                        continue;
                     }
+                    let word_start = byte;
+                    let mut letter_count = 0usize;
+                    while byte < text_end {
+                        let ch = c.text.as_bytes()[byte];
+                        if ch.is_ascii_whitespace() {
+                            break;
+                        }
+                        if ch.is_ascii_alphabetic() || ch.is_ascii_digit() {
+                            letter_count += 1;
+                        }
+                        byte += 1;
+                    }
+                    if letter_count == 0 {
+                        continue;
+                    }
+                    // RSVP pivot: find the pivot letter index within the word
+                    let pivot_offset = match letter_count {
+                        1 => 0,
+                        2..=5 => 1,
+                        6..=9 => 2,
+                        10..=13 => 3,
+                        _ => 4,
+                    };
+                    // Walk forward from word_start to find the pivot letter
+                    let mut pivot_pos = word_start;
+                    let mut counted = 0;
+                    while pivot_pos < byte && counted < pivot_offset {
+                        let ch = c.text.as_bytes()[pivot_pos];
+                        if ch.is_ascii_alphabetic() || ch.is_ascii_digit() {
+                            counted += 1;
+                        }
+                        pivot_pos += 1;
+                    }
+                    // Color just the pivot character (handle multi-byte UTF-8)
+                    let pivot_len = c.text[pivot_pos..]
+                        .chars()
+                        .next()
+                        .map(|ch| ch.len_utf8())
+                        .unwrap_or(1);
+                    let pivot_end = pivot_pos + pivot_len;
+                    v.push((pivot_pos, bionic_on.clone()));
+                    v.push((pivot_end, bionic_off.clone()));
                 }
             }
-        }
-        let mut attrs = attrs.into_iter().peekable();
+            v
+        };
 
+        // ── merge all attribute streams ──
+        let mut sorted: Vec<(usize, String)> = search_attrs
+            .into_iter()
+            .chain(base_attrs)
+            .chain(bionic_attrs)
+            .collect();
+        sorted.sort_by_key(|x| x.0);
+        let mut attrs = sorted.into_iter().peekable();
+
+        // ── build lines ──
         let mut buf = Vec::with_capacity(last_line - bk.line);
         for &(mut pos, line_end) in &c.lines[bk.line..last_line] {
             let mut s = String::new();
@@ -536,6 +589,18 @@ impl View for Page {
             }
             s.push_str(&c.text[pos..line_end]);
             buf.push(s);
+        }
+
+        // ── line focus ──
+        if bk.focus && !buf.is_empty() {
+            let focus_line = buf.len() / 2;
+            let dim_on = Dim.to_string();
+            let dim_off = NormalIntensity.to_string();
+            for (i, line) in buf.iter_mut().enumerate() {
+                if i != focus_line {
+                    *line = format!("{}{}{}", dim_on, line, dim_off);
+                }
+            }
         }
 
         buf
@@ -568,11 +633,9 @@ impl View for Search {
                     dir: bk.dir.clone(),
                     skip: false,
                 };
-                if !bk.search(args) {
-                    bk.jump_reset();
-                }
+                bk.search(args);
             }
-            _ => { bk.dirty = false; }
+            _ => {}
         }
     }
     fn render(&self, bk: &Bk) -> Vec<String> {

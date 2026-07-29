@@ -13,6 +13,7 @@ pub struct Theme {
     pub heading_colors: [Color; 6],
     pub heading_accent_fg: Color,
     pub heading_accent_bg: Color,
+    pub bionic_fg: Color,
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Color {
@@ -40,6 +41,7 @@ pub const THEMES: &[Theme] = &[
         ],
         heading_accent_fg: rgb(250, 179, 135),
         heading_accent_bg: rgb(49, 50, 68),
+        bionic_fg: rgb(250, 179, 135), // peach
     },
     // ── Catppuccin Latte (light) ──
     Theme {
@@ -61,6 +63,7 @@ pub const THEMES: &[Theme] = &[
         ],
         heading_accent_fg: rgb(254, 100, 11),
         heading_accent_bg: rgb(204, 208, 218),
+        bionic_fg: rgb(254, 100, 11), // peach
     },
     // ── Solarized Dark ──
     Theme {
@@ -82,6 +85,7 @@ pub const THEMES: &[Theme] = &[
         ],
         heading_accent_fg: rgb(203, 75, 22),
         heading_accent_bg: rgb(7, 54, 66),
+        bionic_fg: rgb(181, 137, 0), // yellow
     },
     // ── Nord ──
     Theme {
@@ -103,6 +107,7 @@ pub const THEMES: &[Theme] = &[
         ],
         heading_accent_fg: rgb(208, 135, 112),
         heading_accent_bg: rgb(59, 66, 82),
+        bionic_fg: rgb(235, 203, 139), // yellow
     },
     // ── Gruvbox Dark ──
     Theme {
@@ -124,6 +129,7 @@ pub const THEMES: &[Theme] = &[
         ],
         heading_accent_fg: rgb(254, 128, 25),
         heading_accent_bg: rgb(60, 56, 54),
+        bionic_fg: rgb(250, 189, 47), // yellow
     },
 ];
 
