@@ -598,9 +598,13 @@ impl View for Page {
         for &(mut pos, line_end) in &c.lines[bk.line..last_line] {
             let mut s = String::new();
             while let Some((attr_pos, attr)) = attrs.next_if(|a| a.0 <= line_end) {
-                s.push_str(&c.text[pos..attr_pos]);
+                if attr_pos >= pos {
+                    s.push_str(&c.text[pos..attr_pos]);
+                }
                 s.push_str(&attr);
-                pos = attr_pos;
+                if attr_pos >= pos {
+                    pos = attr_pos;
+                }
             }
             s.push_str(&c.text[pos..line_end]);
             buf.push(s);

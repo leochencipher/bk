@@ -415,7 +415,7 @@ impl Bk<'_> {
             for (i, line) in bk.view.render(bk).iter().enumerate() {
                 let clean = strip_ansi(line);
                 if !clean.starts_with("[IMG][") {
-                    let curlen = line.width_cjk();
+                    let curlen = clean.width_cjk();
                     if clean.starts_with(" ") {
                         queue!(
                             stdout,
@@ -427,7 +427,7 @@ impl Bk<'_> {
                             Print(format!(
                                 "{}{}",
                                 &line[3..],
-                                " ".repeat(bk.max_width as usize - curlen + 11)
+                                " ".repeat((bk.max_width as usize + 11).saturating_sub(curlen))
                             )),
                             SetColors(bk.colors)
                         )
@@ -443,15 +443,38 @@ impl Bk<'_> {
                     )
                     .unwrap();
                     // [IMG][url][width] — use cleaned line for parsing
-                    let parts: Vec<&str> = clean[6..clean.len()-1].split("][").collect();
+                    // format: "[IMG][" (6 chars) + url + "][" + width + "]"
+                    if clean.len() < 9 {
+                        // Malformed IMG marker; skip
+                        img_index += 1;
+                        continue;
+                    }
+                    let inner = &clean[6..clean.len() - 1]; // strip "[IMG][" prefix and trailing "]"
+                    let parts: Vec<&str> = inner.split("][").collect();
+                    if parts.len() < 2 {
+                        // Marker wrapped across lines; skip
+                        img_index += 1;
+                        continue;
+                    }
                     let (url, width_str) = (parts[0], parts[1]);
                     let width: u32 = width_str.trim_end_matches(|c: char| !c.is_ascii_digit())
                         .parse()
                         .unwrap_or(100);
                     let width = min(width, 100);
-                    let buf = bk.imgs.get(url).unwrap();
-                    let img = image::load_from_memory(&buf)
-                        .expect("Data from stdin could not be decoded.");
+                    let buf = match bk.imgs.get(url) {
+                        Some(b) => b,
+                        None => {
+                            img_index += 1;
+                            continue;
+                        }
+                    };
+                    let img = match image::load_from_memory(buf) {
+                        Ok(img) => img,
+                        Err(_) => {
+                            img_index += 1;
+                            continue;
+                        }
+                    };
                     let avail_cols = bk.cols.saturating_sub(bk.max_width + 10) as u32;
                     let natural_cols = (img.width() / 8).max(1);
                     let target_cols = (avail_cols * width / 100).min(natural_cols).max(1);
@@ -485,16 +508,22 @@ impl Bk<'_> {
                             ..Default::default()
                         }
                     };
-                    let (_print_width, print_height) =
-                        viuer::print(&display_img, &conf).expect("Image printing failed.");
-                    queue!(
-                        stdout,
-                        cursor::MoveTo(bk.max_width + 7, last_y as u16),
-                        Print(format!("[{}]", img_index))
-                    )
-                    .unwrap();
-                    img_index = img_index + 1;
-                    last_y = last_y + print_height as i16 + 2;
+                    match viuer::print(&display_img, &conf) {
+                        Ok((_print_width, print_height)) => {
+                            queue!(
+                                stdout,
+                                cursor::MoveTo(bk.max_width + 7, last_y as u16),
+                                Print(format!("[{}]", img_index))
+                            )
+                            .unwrap();
+                            img_index += 1;
+                            last_y = last_y + print_height as i16 + 2;
+                        }
+                        Err(_) => {
+                            img_index += 1;
+                            continue;
+                        }
+                    }
                 }
             }
             // Status bar on the last terminal row
@@ -966,4 +995,131 @@ fn main() {
         println!("error saving state: {}", e);
         exit(1);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::view::Page;
+
+    fn make_test_bk(epub: epub::Epub) -> Bk<'static> {
+        let chapters = epub.chapters;
+        let imgs = epub.imgs;
+        let mut chapters: Vec<_> = chapters;
+        let width = 80usize;
+        for c in &mut chapters {
+            c.lines = wrap(&c.text, width);
+        }
+        let chapter_line_offsets = compute_line_offsets(&chapters);
+        let fg = Rgb { r: 255, g: 255, b: 255 };
+        let bg = Rgb { r: 0, g: 0, b: 0 };
+        let theme = THEMES[0];
+        Bk {
+            quit: false,
+            dirty: true,
+            chapters,
+            chapter: 0,
+            line: 0,
+            mark: HashMap::new(),
+            links: HashMap::new(),
+            colors: Colors::new(fg, bg),
+            cli_fg: None,
+            cli_bg: None,
+            cols: 80,
+            rows: 24,
+            max_width: 80,
+            theme,
+            view: &Page,
+            toc_cursor: 0,
+            dir: Direction::Next,
+            meta: Vec::new(),
+            query: String::new(),
+            imgs,
+            chapter_line_offsets,
+            toc_tree: Vec::new(),
+            toc_expanded: Vec::new(),
+            toc_visible: Vec::new(),
+            path_to_chapter: HashMap::new(),
+            bionic: false,
+            focus: false,
+            tts_engine: None,
+            tts_active: false,
+            tts_sentences: Vec::new(),
+            tts_sentence_idx: 0,
+            tts_child: None,
+            tts_buffer: None,
+        }
+    }
+
+    #[test]
+    fn test_load_and_render_all_chapters() {
+        let epub = epub::Epub::new("test/test.epub", false)
+            .expect("failed to load test EPUB");
+        assert!(!epub.chapters.is_empty(), "EPUB has no chapters");
+        let mut bk = make_test_bk(epub);
+
+        for ch_idx in 0..bk.chapters.len() {
+            bk.chapter = ch_idx;
+            bk.line = 0;
+            let rendered = Page.render(&bk);
+            assert!(
+                !rendered.is_empty(),
+                "chapter {} '{}' rendered empty (lines: {:?})",
+                ch_idx,
+                bk.chapters[ch_idx].title,
+                bk.chapters[ch_idx].lines.len(),
+            );
+        }
+    }
+
+    #[test]
+    fn test_scroll_all_chapters() {
+        let epub = epub::Epub::new("test/test.epub", false)
+            .expect("failed to load test EPUB");
+        let mut bk = make_test_bk(epub);
+
+        for ch_idx in 0..bk.chapters.len() {
+            bk.chapter = ch_idx;
+            let line_count = bk.chapters[ch_idx].lines.len();
+            assert!(line_count > 0, "chapter {} has no lines", ch_idx);
+            for line in 0..line_count {
+                bk.line = line;
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    Page.render(&bk)
+                }));
+                if let Err(e) = result {
+                    let msg = if let Some(s) = e.downcast_ref::<String>() {
+                        s.clone()
+                    } else if let Some(s) = e.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else {
+                        "unknown panic".to_string()
+                    };
+                    panic!(
+                        "chapter {} '{}': panic at line {}/{}: {}",
+                        ch_idx, bk.chapters[ch_idx].title, line, line_count, msg
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_chapter_navigation() {
+        let epub = epub::Epub::new("test/test.epub", false)
+            .expect("failed to load test EPUB");
+        let mut bk = make_test_bk(epub);
+
+        // Simulate pressing ] to go through all chapters
+        for ch_idx in 0..bk.chapters.len() {
+            assert_eq!(bk.chapter, ch_idx, "chapter index mismatch");
+            bk.line = 0;
+            let _ = Page.render(&bk);
+            // Simulate next_chapter
+            if bk.chapter < bk.chapters.len() - 1 {
+                bk.chapter += 1;
+                bk.line = 0;
+            }
+        }
+    }
 }
