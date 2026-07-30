@@ -751,10 +751,7 @@ impl Bk<'_> {
         if let Some(engine) = &self.tts_engine {
             let mut tts = engine.lock().unwrap();
             if tts.save(&sentence, std::path::Path::new(&output), &params).is_ok() {
-                self.tts_child = std::process::Command::new("afplay")
-                    .arg(&output)
-                    .spawn()
-                    .ok();
+                self.tts_child = Self::play_audio(&output);
             }
         }
     }
@@ -801,16 +798,49 @@ impl Bk<'_> {
         });
 
         if let Some(path) = buffered {
-            self.tts_buffer = None;
-            self.tts_child = std::process::Command::new("afplay")
-                .arg(&path)
-                .spawn()
-                .ok();
+            self.tts_child = Self::play_audio(&path);
         } else {
             self.start_tts();
         }
 
         self.buffer_next_sentence();
+    }
+
+    /// Spawn a cross-platform audio player for the given WAV file.
+    fn play_audio(path: &str) -> Option<Child> {
+        if cfg!(target_os = "macos") {
+            std::process::Command::new("afplay")
+                .arg(path)
+                .spawn()
+                .ok()
+        } else if cfg!(target_os = "linux") {
+            // Try ffplay first (part of ffmpeg), fall back to aplay
+            std::process::Command::new("ffplay")
+                .args(["-nodisp", "-autoexit", "-loglevel", "quiet", path])
+                .spawn()
+                .or_else(|_| {
+                    std::process::Command::new("aplay")
+                        .arg(path)
+                        .spawn()
+                })
+                .ok()
+        } else if cfg!(target_os = "windows") {
+            std::process::Command::new("powershell")
+                .args([
+                    "-c",
+                    &format!(
+                        "Add-Type -AssemblyName PresentationCore; \
+                         $player = New-Object System.Windows.Media.MediaPlayer; \
+                         $player.Open('{}'); $player.Play(); \
+                         Start-Sleep -Seconds 999",
+                        path
+                    ),
+                ])
+                .spawn()
+                .ok()
+        } else {
+            None
+        }
     }
 
 }
