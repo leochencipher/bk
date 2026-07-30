@@ -69,7 +69,7 @@ impl View for Metadata {
             format!("total: {:.0}%", progress),
             format!(
                 "tts: {}",
-                if bk.tts.is_some() { "loaded" } else { "not loaded" }
+                if bk.tts_engine.is_some() { "loaded" } else { "not loaded" }
             ),
             String::new(),
         ];
@@ -435,7 +435,7 @@ impl View for Page {
             Char('B') => { bk.bionic = !bk.bionic; },
             Char('F') => { bk.focus = !bk.focus; },
             Char('s') => {
-                if bk.tts.is_some() && !bk.chapters.is_empty() {
+                if bk.tts_engine.is_some() && !bk.chapters.is_empty() {
                     let chapter = &bk.chapters[bk.chapter];
                     let line_start = chapter.lines.get(bk.line).map(|r| r.0).unwrap_or(0);
                     bk.tts_sentences = split_into_sentences(&chapter.text);
@@ -671,25 +671,40 @@ impl View for Search {
     }
 }
 
+/// Normalize text for TTS: collapse whitespace, strip quotes and noise chars.
+/// Returns (normalized_string, byte_map) where byte_map[i] = original byte position
+/// for each char in the normalized string (or None for inserted spaces).
+fn normalize_for_tts(text: &str) -> (String, Vec<usize>) {
+    let mut out = String::with_capacity(text.len());
+    let mut map = Vec::with_capacity(text.len());
+    let mut in_ws = false;
+    for (byte_pos, ch) in text.char_indices() {
+        match ch {
+            // Strip all double-quote-like characters
+            '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}'
+            | '\u{00AB}' | '\u{00BB}'
+            | '"' => continue,
+            ' ' | '\n' | '\r' | '\t' => {
+                if !in_ws {
+                    out.push(' ');
+                    map.push(byte_pos);
+                    in_ws = true;
+                }
+            }
+            _ => {
+                out.push(ch);
+                map.push(byte_pos);
+                in_ws = false;
+            }
+        }
+    }
+    (out.trim().to_string(), map)
+}
+
 /// Split text into TTS chunks: normalize whitespace, split on sentence boundaries,
 /// then merge short sentences into longer chunks for natural speech.
 fn split_into_sentences(text: &str) -> Vec<String> {
-    // 1. Normalize: collapse all whitespace runs into single spaces
-    let bytes = text.as_bytes();
-    let mut normalized = String::with_capacity(bytes.len());
-    let mut in_ws = false;
-    for &b in bytes {
-        if matches!(b, b' ' | b'\n' | b'\r' | b'\t') {
-            if !in_ws {
-                normalized.push(' ');
-                in_ws = true;
-            }
-        } else {
-            normalized.push(b as char);
-            in_ws = false;
-        }
-    }
-    let normalized = normalized.trim().to_string();
+    let (normalized, _) = normalize_for_tts(text);
     if normalized.is_empty() {
         return Vec::new();
     }
@@ -746,41 +761,10 @@ fn split_into_sentences(text: &str) -> Vec<String> {
 
 /// Find which chunk index contains `byte_pos` in the original `text`.
 fn find_sentence_index(chunks: &[String], text: &str, byte_pos: usize) -> usize {
-    // Normalize the text the same way as split_into_sentences
-    let bytes = text.as_bytes();
-    let mut normalized = String::with_capacity(bytes.len());
-    let mut in_ws = false;
-    for &b in bytes {
-        if matches!(b, b' ' | b'\n' | b'\r' | b'\t') {
-            if !in_ws {
-                normalized.push(' ');
-                in_ws = true;
-            }
-        } else {
-            normalized.push(b as char);
-            in_ws = false;
-        }
-    }
-    let normalized = normalized.trim().to_string();
+    let (normalized, map) = normalize_for_tts(text);
 
-    // Find the approximate position in normalized text by counting
-    // non-whitespace bytes up to byte_pos
-    let mut norm_pos = 0usize;
-    let mut orig_pos = 0usize;
-    let mut last_ws = false;
-    while orig_pos < byte_pos && orig_pos < bytes.len() {
-        let b = bytes[orig_pos];
-        if matches!(b, b' ' | b'\n' | b'\r' | b'\t') {
-            if !last_ws {
-                norm_pos += 1; // single space
-                last_ws = true;
-            }
-        } else {
-            norm_pos += 1;
-            last_ws = false;
-        }
-        orig_pos += 1;
-    }
+    // Find the normalized position corresponding to byte_pos
+    let norm_pos = map.iter().position(|&bp| bp >= byte_pos).unwrap_or(map.len());
 
     // Search for each chunk in the normalized text to find the containing one
     let mut search_from = 0usize;
@@ -830,10 +814,7 @@ impl View for TtsView {
         let current = &bk.tts_sentences[bk.tts_sentence_idx];
         let total = bk.tts_sentences.len();
         let idx_display = bk.tts_sentence_idx + 1;
-
-        // Wrap the current sentence to fit the terminal width
-        let max_width = bk.max_width as usize;
-        let wrapped = crate::wrap(current, max_width);
+        let max_width = (bk.cols as usize).saturating_sub(2);
 
         let mut vec = Vec::new();
         vec.push(String::new());
@@ -843,8 +824,29 @@ impl View for TtsView {
         vec.push(String::new());
 
         // Current sentence
-        for &(a, b) in &wrapped {
+        let cur_wrapped = crate::wrap(current, max_width);
+        for &(a, b) in &cur_wrapped {
             vec.push(format!("  {}", &current[a..b]));
+        }
+        vec.push(String::new());
+
+        // Next sentence preview
+        let next_idx = bk.tts_sentence_idx + 1;
+        if next_idx < total {
+            let next = &bk.tts_sentences[next_idx];
+            let buffered = bk.tts_buffer.as_ref().map_or(false, |(i, _)| *i == next_idx);
+            let label = if buffered { "  ⏳ Next (buffered):" } else { "  ⏳ Next (buffering...):" };
+            vec.push(label.to_string());
+            // Show first line of next sentence as preview
+            let next_wrapped = crate::wrap(next, max_width);
+            if let Some(&(a, b)) = next_wrapped.first() {
+                let preview = &next[a..b];
+                if next_wrapped.len() > 1 {
+                    vec.push(format!("  {}…", preview));
+                } else {
+                    vec.push(format!("  {}", preview));
+                }
+            }
         }
 
         // Fill remaining space and add footer

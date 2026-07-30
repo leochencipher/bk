@@ -61,13 +61,13 @@ impl Epub {
         Ok(epub)
     }
     fn get_text(&mut self, name: &str) -> String {
-        let mut text = String::new();
+        let mut bytes = Vec::new();
         self.container
             .by_name(name)
             .unwrap()
-            .read_to_string(&mut text)
+            .read_to_end(&mut bytes)
             .unwrap();
-        text
+        decode_text(&bytes)
     }
     fn get_chapters(&mut self, spine: Vec<(String, Vec<String>)>) {
         for (title, paths) in spine {
@@ -443,4 +443,113 @@ fn epub3(doc: Document, tree: &mut Vec<TocEntry>, flat: &mut HashMap<String, Str
         .find(|n| n.has_tag_name("ol"))
         .unwrap();
     parse_ol(ol, tree, flat);
+}
+
+/// Decode bytes to String, trying UTF-8 first, then falling back to
+/// Windows-1252 (common for older EPUBs with smart quotes as 0x93/0x94),
+/// then fixing double-encoded UTF-8 mojibake.
+fn decode_text(bytes: &[u8]) -> String {
+    // Try UTF-8 first (most EPUBs are UTF-8)
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        let s = s.to_string();
+        // Check for double-encoded UTF-8 and fix it
+        return fix_double_encoded(&s);
+    }
+
+    // Not valid UTF-8 — try to detect encoding from XML/HTML declaration
+    let head = std::str::from_utf8(&bytes[..bytes.len().min(512)]).unwrap_or("");
+    let encoding = detect_encoding(head);
+
+    match encoding {
+        Some("windows-1252") | Some("iso-8859-1") | Some("latin1") => {
+            decode_windows1252(bytes)
+        }
+        _ => {
+            // Fallback: treat as Windows-1252
+            decode_windows1252(bytes)
+        }
+    }
+}
+
+/// Detect encoding from XML declaration or HTML meta tag.
+fn detect_encoding(head: &str) -> Option<&str> {
+    if let Some(pos) = head.find("encoding=") {
+        let rest = &head[pos + 9..];
+        let delim = rest.chars().next()?;
+        if delim == '"' || delim == '\'' {
+            let end = rest[1..].find(delim)?;
+            return Some(&rest[1..1 + end]);
+        }
+    }
+    if let Some(pos) = head.to_lowercase().find("charset=") {
+        let rest = &head[pos + 8..];
+        let delim = rest.chars().next()?;
+        if delim == '"' || delim == '\'' {
+            let end = rest[1..].find(delim)?;
+            return Some(&rest[1..1 + end]);
+        }
+        let end = rest.find(|c: char| c.is_whitespace() || c == '>')?;
+        return Some(&rest[..end]);
+    }
+    None
+}
+
+/// Fix double-encoded UTF-8: e.g. "â" (C3 A2 C2 80 C2 9C) → " (E2 80 9C).
+/// This happens when UTF-8 bytes are misinterpreted as Latin-1 and re-encoded.
+fn fix_double_encoded(text: &str) -> String {
+    // Common double-encoded patterns: the first byte of a multi-byte UTF-8
+    // char (0xC2-0xF4) followed by continuation bytes (0x80-0xBF) that were
+    // also individually encoded as UTF-8.
+    // We look for C3 A2 (â) followed by C2 80-C2 BF sequences.
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // Check for â (C3 A2) which might be the start of a double-encoded sequence
+        if i + 1 < bytes.len() && bytes[i] == 0xC3 && bytes[i + 1] == 0xA2 {
+            // Collect following C2 xx sequences
+            let mut j = i + 2;
+            let mut parts: Vec<u8> = vec![0xE2]; // â came from 0xE2
+            while j + 1 < bytes.len() && bytes[j] == 0xC2 && (0x80..=0xBF).contains(&bytes[j + 1]) {
+                parts.push(bytes[j + 1]);
+                j += 2;
+            }
+            if parts.len() >= 2 {
+                // Reconstruct original UTF-8 sequence
+                if let Ok(reconstructed) = std::str::from_utf8(&parts) {
+                    let ch = reconstructed.chars().next().unwrap();
+                    // Only fix if it's a printable/punctuation char (not a control char)
+                    if ch as u32 >= 0x2000 || ch == '\u{201C}' || ch == '\u{201D}' || ch == '\u{2018}' || ch == '\u{2019}' || ch == '\u{2013}' || ch == '\u{2014}' {
+                        out.extend_from_slice(reconstructed.as_bytes());
+                        i = j;
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| text.to_string())
+}
+
+/// Decode Windows-1252 bytes to a UTF-8 String.
+fn decode_windows1252(bytes: &[u8]) -> String {
+    bytes.iter().map(|&b| windows1252_to_char(b)).collect()
+}
+
+fn windows1252_to_char(byte: u8) -> char {
+    match byte {
+        0x80 => '\u{20AC}', 0x82 => '\u{201A}', 0x83 => '\u{0192}',
+        0x84 => '\u{201E}', 0x85 => '\u{2026}', 0x86 => '\u{2020}',
+        0x87 => '\u{2021}', 0x88 => '\u{02C6}', 0x89 => '\u{2030}',
+        0x8A => '\u{0160}', 0x8B => '\u{2039}', 0x8C => '\u{0152}',
+        0x8E => '\u{017D}',
+        0x91 => '\u{2018}', 0x92 => '\u{2019}', 0x93 => '\u{201C}',
+        0x94 => '\u{201D}', 0x95 => '\u{2022}', 0x96 => '\u{2013}',
+        0x97 => '\u{2014}', 0x98 => '\u{02DC}', 0x99 => '\u{2122}',
+        0x9A => '\u{0161}', 0x9B => '\u{203A}', 0x9C => '\u{0153}',
+        0x9E => '\u{017E}', 0x9F => '\u{0178}',
+        _ => byte as char,
+    }
 }

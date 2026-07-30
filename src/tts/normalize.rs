@@ -64,10 +64,11 @@ const LETTER_NAMES: &[(&str, &str)] = &[
 // ── punctuation normalization ──────────────────────────────────────────────
 
 fn normalize_punctuation(text: &str) -> String {
-    text.replace('\u{2018}', "'")
-        .replace('\u{2019}', "'")
-        .replace('\u{201c}', "\"")
-        .replace('\u{201d}', "\"")
+    text.replace('\u{2018}', "'")   // left single quote → apostrophe
+        .replace('\u{2019}', "'")   // right single quote → apostrophe
+        .replace('\u{201c}', "")    // left double quote → remove
+        .replace('\u{201d}', "")    // right double quote → remove
+        .replace('"', "")           // straight double quote → remove
         .replace('\u{2013}', "-")
         .replace('\u{2014}', ", ")
         .replace('\u{2026}', "...")
@@ -485,5 +486,22 @@ mod tests {
     fn test_boundary_pause() {
         assert!((boundary_pause_seconds("Hello?") - 0.28).abs() < 0.001);
         assert!((boundary_pause_seconds("Hello.") - 0.22).abs() < 0.001);
+    }
+    #[test]
+    fn test_quotes_removed() {
+        // normalize_text should strip double quotes so they don't
+        // produce unexpected phonemes.
+        let result = normalize_text("He said, \"hello\" to me.");
+        println!("normalized: {:?}", result);
+        assert!(!result.contains('"'), "normalize_text should remove straight quotes");
+        assert!(result.contains("hello"), "normalize_text should preserve content");
+
+        // Curly quotes should also be removed
+        let result2 = normalize_text("He said, \u{201c}hello\u{201d} to me.");
+        println!("normalized curly: {:?}", result2);
+        assert!(!result2.contains('"'), "normalize_text should remove curly quotes");
+        assert!(!result2.contains('\u{201c}'), "normalize_text should remove left curly quote");
+        assert!(!result2.contains('\u{201d}'), "normalize_text should remove right curly quote");
+        assert!(result2.contains("hello"), "normalize_text should preserve content");
     }
 }

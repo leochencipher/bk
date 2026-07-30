@@ -19,6 +19,8 @@ use std::{
     io::{self, Write},
     iter,
     process::{exit, Child},
+    sync::{Arc, Mutex},
+    thread,
     time::Duration,
     u16, u32,
 };
@@ -89,6 +91,9 @@ fn wrap(text: &str, max_cols: usize) -> Vec<(usize, usize)> {
             cols = after;
         }
     }
+
+    // Push the final line
+    lines.push((start, text.len()));
 
     lines
 }
@@ -275,12 +280,13 @@ pub struct Bk<'a> {
     // reading mode toggles
     pub bionic: bool,
     pub focus: bool,
-    tts: Option<tts::InflectTts>,
+    tts_engine: Option<Arc<Mutex<tts::InflectTts>>>,
     // TTS mode state
     pub tts_active: bool,
     pub tts_sentences: Vec<String>,
     pub tts_sentence_idx: usize,
     pub tts_child: Option<Child>,
+    pub tts_buffer: Option<(usize, String)>,  // (idx, wav_path) of pre-synthesized next sentence
 }
 
 impl Bk<'_> {
@@ -317,10 +323,10 @@ impl Bk<'_> {
         let toc_expanded = vec![true; toc_count.max(1)];
 
         // Initialize TTS engine if model directory is available
-        let tts = args.tts_model_dir.as_ref().and_then(|dir| {
+        let tts_engine = args.tts_model_dir.as_ref().and_then(|dir| {
             let model_dir = std::path::Path::new(dir);
             if model_dir.join("onnx/duration.onnx").exists() {
-                tts::InflectTts::new(model_dir).ok()
+                tts::InflectTts::new(model_dir).ok().map(|e| Arc::new(Mutex::new(e)))
             } else {
                 None
             }
@@ -355,11 +361,12 @@ impl Bk<'_> {
             path_to_chapter,
             bionic: false,
             focus: false,
-            tts,
+            tts_engine,
             tts_active: false,
             tts_sentences: Vec::new(),
             tts_sentence_idx: 0,
             tts_child: None,
+            tts_buffer: None,
         };
 
         bk.jump_byte(args.chapter, args.byte);
@@ -554,6 +561,7 @@ impl Bk<'_> {
                     }
                 } else if self.tts_sentence_idx < self.tts_sentences.len() {
                     self.start_tts();
+                    self.buffer_next_sentence();
                     self.dirty = true;
                 }
             }
@@ -708,16 +716,43 @@ impl Bk<'_> {
         if idx >= self.tts_sentences.len() {
             return;
         }
-        let sentence = &self.tts_sentences[idx];
+        let sentence = self.tts_sentences[idx].clone();
         let params = tts::SynthesizeParams::default();
-        let output = "/tmp/bk_tts.wav";
-        if let Some(tts) = &mut self.tts {
-            if tts.save(sentence, std::path::Path::new(output), &params).is_ok() {
+        let output = format!("/tmp/bk_tts_{}.wav", idx);
+        if let Some(engine) = &self.tts_engine {
+            let mut tts = engine.lock().unwrap();
+            if tts.save(&sentence, std::path::Path::new(&output), &params).is_ok() {
                 self.tts_child = std::process::Command::new("afplay")
-                    .arg(output)
+                    .arg(&output)
                     .spawn()
                     .ok();
             }
+        }
+    }
+
+    /// Synthesize the next sentence in a background thread.
+    fn buffer_next_sentence(&mut self) {
+        let next_idx = self.tts_sentence_idx + 1;
+        if next_idx >= self.tts_sentences.len() {
+            return;
+        }
+        if let Some((buf_idx, _)) = &self.tts_buffer {
+            if *buf_idx == next_idx {
+                return;
+            }
+        }
+        let sentence = self.tts_sentences[next_idx].clone();
+        let output = format!("/tmp/bk_tts_{}.wav", next_idx);
+        let engine = self.tts_engine.clone();
+
+        self.tts_buffer = Some((next_idx, output.clone()));
+
+        if let Some(engine) = engine {
+            thread::spawn(move || {
+                let mut tts = engine.lock().unwrap();
+                let params = tts::SynthesizeParams::default();
+                let _ = tts.save(&sentence, std::path::Path::new(&output), &params);
+            });
         }
     }
 
@@ -725,13 +760,28 @@ impl Bk<'_> {
     fn advance_tts(&mut self) {
         self.tts_sentence_idx += 1;
         if self.tts_sentence_idx >= self.tts_sentences.len() {
-            // End of chapter
             self.tts_child = None;
+            self.tts_buffer = None;
             self.tts_active = false;
             self.view = &Page;
+            return;
+        }
+
+        let buffered = self.tts_buffer.as_ref().and_then(|(idx, path)| {
+            if *idx == self.tts_sentence_idx { Some(path.clone()) } else { None }
+        });
+
+        if let Some(path) = buffered {
+            self.tts_buffer = None;
+            self.tts_child = std::process::Command::new("afplay")
+                .arg(&path)
+                .spawn()
+                .ok();
         } else {
             self.start_tts();
         }
+
+        self.buffer_next_sentence();
     }
 
 }
