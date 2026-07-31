@@ -70,3 +70,86 @@ pub(crate) fn rebuild_toc_visible(
     dfs(tree, expanded, path_to_chapter, &mut idx, 0, vec![], &mut visible);
     visible
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_entry(title: &str, path: &str, children: Vec<epub::TocEntry>) -> epub::TocEntry {
+        epub::TocEntry {
+            title: title.to_string(),
+            path: path.to_string(),
+            children,
+        }
+    }
+
+    #[test]
+    fn test_count_toc_empty() {
+        assert_eq!(count_toc(&[]), 0);
+    }
+
+    #[test]
+    fn test_count_toc_single() {
+        let tree = vec![make_entry("Ch1", "ch1.xhtml", vec![])];
+        assert_eq!(count_toc(&tree), 1);
+    }
+
+    #[test]
+    fn test_count_toc_nested() {
+        let tree = vec![
+            make_entry("Ch1", "ch1.xhtml", vec![
+                make_entry("Sub1", "sub1.xhtml", vec![]),
+                make_entry("Sub2", "sub2.xhtml", vec![]),
+            ]),
+            make_entry("Ch2", "ch2.xhtml", vec![]),
+        ];
+        assert_eq!(count_toc(&tree), 4);
+    }
+
+    #[test]
+    fn test_rebuild_toc_visible_all_expanded() {
+        let tree = vec![
+            make_entry("Ch1", "ch1.xhtml", vec![
+                make_entry("Sub1", "sub1.xhtml", vec![]),
+            ]),
+        ];
+        let expanded = vec![true, true];
+        let path_to_chapter = HashMap::from([
+            ("ch1.xhtml".to_string(), 0usize),
+            ("sub1.xhtml".to_string(), 1usize),
+        ]);
+        let visible = rebuild_toc_visible(&tree, &expanded, &path_to_chapter);
+        assert_eq!(visible.len(), 2);
+        assert_eq!(visible[0].title, "Ch1");
+        assert_eq!(visible[0].depth, 0);
+        assert_eq!(visible[0].chapter, 0);
+        assert_eq!(visible[0].has_children, true);
+        assert_eq!(visible[0].is_expanded, true);
+        assert_eq!(visible[1].title, "Sub1");
+        assert_eq!(visible[1].depth, 1);
+        assert_eq!(visible[1].chapter, 1);
+    }
+
+    #[test]
+    fn test_rebuild_toc_visible_collapsed() {
+        let tree = vec![
+            make_entry("Ch1", "ch1.xhtml", vec![
+                make_entry("Sub1", "sub1.xhtml", vec![]),
+            ]),
+        ];
+        let expanded = vec![false]; // Ch1 collapsed, Sub1's expanded state is never accessed
+        let path_to_chapter = HashMap::from([
+            ("ch1.xhtml".to_string(), 0usize),
+        ]);
+        let visible = rebuild_toc_visible(&tree, &expanded, &path_to_chapter);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].title, "Ch1");
+        assert_eq!(visible[0].is_expanded, false);
+    }
+
+    #[test]
+    fn test_rebuild_toc_visible_empty() {
+        let visible = rebuild_toc_visible(&[], &[], &HashMap::new());
+        assert!(visible.is_empty());
+    }
+}

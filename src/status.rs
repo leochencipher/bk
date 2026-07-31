@@ -41,3 +41,54 @@ pub(crate) fn build_status(bk: &Bk) -> (String, String) {
     );
     (left, right)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Bk;
+
+    #[test]
+    fn test_build_status_empty() {
+        let bk = Bk::default_for_test();
+        let (left, right) = build_status(&bk);
+        assert!(left.contains("(empty)"), "left: {:?}", left);
+        assert!(right.is_empty());
+    }
+
+    #[test]
+    fn test_build_status_with_chapters() {
+        let ch = crate::epub::Chapter {
+            title: "Chapter 1".into(),
+            text: "hello world foo bar baz".into(),
+            lines: vec![(0, 25)],
+            attrs: vec![],
+            color_attrs: vec![],
+            state: Default::default(),
+            links: vec![],
+            heading_spans: vec![],
+            frag: vec![],
+        };
+        let mut bk = Bk::default_for_test();
+        bk.chapters = vec![ch];
+        bk.chapter_line_offsets = vec![0, 1];
+        bk.rows = 24;
+
+        let (left, right) = build_status(&bk);
+        assert!(left.contains("Chapter 1"), "left: {:?}", left);
+        assert!(right.contains("📄"), "right: {:?}", right);
+    }
+
+    #[test]
+    fn test_hash_file() {
+        // hash_file should return a SHA-256 hex string
+        let hash = hash_file("test/test.epub").expect("failed to hash test.epub");
+        assert_eq!(hash.len(), 64, "SHA-256 hex should be 64 chars");
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "hash should be hex: {:?}", hash);
+    }
+
+    #[test]
+    fn test_hash_file_not_found() {
+        let result = hash_file("nonexistent.epub");
+        assert!(result.is_err());
+    }
+}

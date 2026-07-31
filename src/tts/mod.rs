@@ -111,3 +111,38 @@ impl InflectTts {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_synthesize_params_default() {
+        let params = SynthesizeParams::default();
+        assert!((params.speed - 1.0).abs() < f32::EPSILON);
+        assert!((params.variation - 0.667).abs() < 0.001);
+        assert_eq!(params.seed, 0);
+    }
+
+    #[test]
+    fn test_synthesize_params_clone() {
+        let params = SynthesizeParams {
+            speed: 1.5,
+            variation: 0.5,
+            seed: 42,
+        };
+        let cloned = params.clone();
+        assert!((cloned.speed - 1.5).abs() < f32::EPSILON);
+        assert!((cloned.variation - 0.5).abs() < f32::EPSILON);
+        assert_eq!(cloned.seed, 42);
+    }
+
+    #[test]
+    fn test_synthesize_params_debug() {
+        let params = SynthesizeParams::default();
+        let debug = format!("{:?}", params);
+        assert!(debug.contains("speed"));
+        assert!(debug.contains("variation"));
+        assert!(debug.contains("seed"));
+    }
+}

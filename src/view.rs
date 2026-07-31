@@ -824,7 +824,7 @@ impl View for TtsView {
         vec.push(String::new());
 
         // Progress line
-        vec.push(format!("  🗣  Sentence {} of {}", idx_display, total));
+        vec.push(format!("  \u{1f5e3}  Sentence {} of {}", idx_display, total));
         vec.push(String::new());
 
         // Current sentence
@@ -839,14 +839,14 @@ impl View for TtsView {
         if next_idx < total {
             let next = &bk.tts_sentences[next_idx];
             let buffered = bk.tts_buffer.as_ref().map_or(false, |(i, _)| *i == next_idx);
-            let label = if buffered { "  ⏳ Next (buffered):" } else { "  ⏳ Next (buffering...):" };
+            let label = if buffered { "  \u{23f3} Next (buffered):" } else { "  \u{23f3} Next (buffering...):" };
             vec.push(label.to_string());
             // Show first line of next sentence as preview
             let next_wrapped = crate::wrap(next, max_width);
             if let Some(&(a, b)) = next_wrapped.first() {
                 let preview = &next[a..b];
                 if next_wrapped.len() > 1 {
-                    vec.push(format!("  {}…", preview));
+                    vec.push(format!("  {}...", preview));
                 } else {
                     vec.push(format!("  {}", preview));
                 }
@@ -866,3 +866,188 @@ impl View for TtsView {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Bk, Direction, SearchArgs, TocItem};
+
+    #[test]
+    fn test_toc_prefix_root_first() {
+        let item = TocItem {
+            title: "Ch1".into(),
+            chapter: 0,
+            depth: 0,
+            has_children: false,
+            is_expanded: false,
+            is_last: false,
+            ancestors_last: vec![],
+            toc_idx: 0,
+        };
+        assert_eq!(toc_prefix(&item), "\u{251c}\u{2500}\u{2500} ");
+    }
+
+    #[test]
+    fn test_toc_prefix_root_last() {
+        let item = TocItem {
+            title: "Ch1".into(),
+            chapter: 0,
+            depth: 0,
+            has_children: false,
+            is_expanded: false,
+            is_last: true,
+            ancestors_last: vec![],
+            toc_idx: 0,
+        };
+        assert_eq!(toc_prefix(&item), "\u{2514}\u{2500}\u{2500} ");
+    }
+
+    #[test]
+    fn test_toc_prefix_nested() {
+        let item = TocItem {
+            title: "Sub".into(),
+            chapter: 1,
+            depth: 1,
+            has_children: false,
+            is_expanded: false,
+            is_last: true,
+            ancestors_last: vec![false],
+            toc_idx: 1,
+        };
+        assert_eq!(toc_prefix(&item), "\u{2502}   \u{2514}\u{2500}\u{2500} ");
+    }
+
+    #[test]
+    fn test_toc_prefix_deeply_nested() {
+        let item = TocItem {
+            title: "Deep".into(),
+            chapter: 2,
+            depth: 2,
+            has_children: false,
+            is_expanded: false,
+            is_last: false,
+            ancestors_last: vec![false, true],
+            toc_idx: 2,
+        };
+        assert_eq!(toc_prefix(&item), "\u{2502}       \u{251c}\u{2500}\u{2500} ");
+    }
+
+    #[test]
+    fn test_normalize_for_tts_collapses_whitespace() {
+        let (text, map) = normalize_for_tts("hello   world\n\nfoo");
+        assert_eq!(text, "hello world foo");
+        assert_eq!(map.len(), text.len());
+    }
+
+    #[test]
+    fn test_normalize_for_tts_strips_quotes() {
+        let (text, _) = normalize_for_tts("he said \"hello\" to me");
+        assert_eq!(text, "he said hello to me");
+    }
+
+    #[test]
+    fn test_normalize_for_tts_strips_curly_quotes() {
+        let (text, _) = normalize_for_tts("\u{201C}hello\u{201D}");
+        assert_eq!(text, "hello");
+    }
+
+    #[test]
+    fn test_normalize_for_tts_byte_map() {
+        let (text, map) = normalize_for_tts("a b");
+        assert_eq!(text, "a b");
+        // Each char maps to its original byte position
+        assert_eq!(map[0], 0); // 'a'
+        assert_eq!(map[1], 1); // ' '
+        assert_eq!(map[2], 2); // 'b'
+    }
+
+    #[test]
+    fn test_normalize_for_tts_byte_map_with_skipped_quotes() {
+        let (text, map) = normalize_for_tts("\"hi\"");
+        assert_eq!(text, "hi");
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[0], 1); // 'h' at byte 1 (skipped the first quote)
+        assert_eq!(map[1], 2); // 'i' at byte 2
+    }
+
+    #[test]
+    fn test_normalize_for_tts_trims() {
+        let (text, _) = normalize_for_tts("  hello  ");
+        assert_eq!(text, "hello");
+    }
+
+    #[test]
+    fn test_split_into_sentences_empty() {
+        let chunks = split_into_sentences("");
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn test_split_into_sentences_simple() {
+        let chunks = split_into_sentences("Hello world. Second sentence.");
+        // Both sentences are short (< 120 chars), so they get merged into one chunk
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], "Hello world. Second sentence.");
+    }
+
+    #[test]
+    fn test_split_into_sentences_question_exclamation() {
+        let chunks = split_into_sentences("What? Yes!");
+        // Both are short, so they get merged
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], "What? Yes!");
+    }
+
+    #[test]
+    fn test_split_into_sentences_merges_short() {
+        // Short sentences should be merged into longer chunks
+        let chunks = split_into_sentences("A. B. C. D. E. F.");
+        assert!(chunks.len() < 6, "short sentences should be merged");
+        assert!(!chunks.is_empty());
+    }
+
+    #[test]
+    fn test_find_sentence_index_first() {
+        let chunks = vec!["Hello.".into(), "World.".into()];
+        let idx = find_sentence_index(&chunks, "Hello. World.", 0);
+        assert_eq!(idx, 0);
+    }
+
+    #[test]
+    fn test_find_sentence_index_second() {
+        let chunks = vec!["Hello.".into(), "World.".into()];
+        // byte 7 is 'W' in "Hello. World."
+        let idx = find_sentence_index(&chunks, "Hello. World.", 7);
+        assert_eq!(idx, 1);
+    }
+
+    #[test]
+    fn test_find_sentence_index_past_end() {
+        let chunks = vec!["Hello.".into()];
+        let idx = find_sentence_index(&chunks, "Hello.", 100);
+        assert_eq!(idx, 0);
+    }
+
+    #[test]
+    fn test_help_render() {
+        let help = Help;
+        let lines = help.render(&Bk::default_for_test());
+        assert!(!lines.is_empty());
+        // Should contain keybindings
+        assert!(lines.iter().any(|l| l.contains("Quit")));
+        assert!(lines.iter().any(|l| l.contains("Search")));
+    }
+
+    #[test]
+    fn test_metadata_render_empty() {
+        let meta = Metadata;
+        let bk = Bk::default_for_test();
+        let lines = meta.render(&bk);
+        assert_eq!(lines[0], "(empty book)");
+    }
+
+    #[test]
+    fn test_page_render_empty() {
+        let lines = Page.render(&Bk::default_for_test());
+        assert_eq!(lines[0], "(empty book)");
+    }
+}

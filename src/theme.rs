@@ -136,3 +136,67 @@ pub const THEMES: &[Theme] = &[
 pub fn find_theme(name: &str) -> Option<usize> {
     THEMES.iter().position(|t| t.name == name)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_find_theme_exists() {
+        let idx = find_theme("catppuccin-mocha");
+        assert!(idx.is_some());
+        assert_eq!(THEMES[idx.unwrap()].name, "catppuccin-mocha");
+    }
+
+    #[test]
+    fn test_find_theme_latte() {
+        let idx = find_theme("catppuccin-latte");
+        assert!(idx.is_some());
+        assert_eq!(THEMES[idx.unwrap()].name, "catppuccin-latte");
+    }
+
+    #[test]
+    fn test_find_theme_solarized() {
+        let idx = find_theme("solarized-dark");
+        assert!(idx.is_some());
+    }
+
+    #[test]
+    fn test_find_theme_nord() {
+        let idx = find_theme("nord");
+        assert!(idx.is_some());
+    }
+
+    #[test]
+    fn test_find_theme_gruvbox() {
+        let idx = find_theme("gruvbox-dark");
+        assert!(idx.is_some());
+    }
+
+    #[test]
+    fn test_find_theme_not_found() {
+        assert_eq!(find_theme("nonexistent-theme"), None);
+    }
+
+    #[test]
+    fn test_find_theme_empty_string() {
+        assert_eq!(find_theme(""), None);
+    }
+
+    #[test]
+    fn test_themes_have_unique_names() {
+        let mut names: Vec<&str> = THEMES.iter().map(|t| t.name).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), THEMES.len(), "themes should have unique names");
+    }
+
+    #[test]
+    fn test_each_theme_has_all_fields() {
+        for theme in THEMES {
+            assert!(!theme.name.is_empty());
+            // heading_colors should have 6 entries
+            assert_eq!(theme.heading_colors.len(), 6);
+        }
+    }
+}

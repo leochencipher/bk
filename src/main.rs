@@ -701,6 +701,48 @@ impl Bk<'_> {
         );
     }
 
+    #[cfg(test)]
+    pub(crate) fn default_for_test() -> Self {
+        use crate::wrap;
+        let fg = Rgb { r: 255, g: 255, b: 255 };
+        let bg = Rgb { r: 0, g: 0, b: 0 };
+        Bk {
+            quit: false,
+            dirty: true,
+            chapters: Vec::new(),
+            chapter: 0,
+            line: 0,
+            mark: HashMap::new(),
+            links: HashMap::new(),
+            colors: Colors::new(fg, bg),
+            cli_fg: None,
+            cli_bg: None,
+            cols: 80,
+            rows: 24,
+            max_width: 80,
+            theme: THEMES[0],
+            view: &crate::view::Page,
+            toc_cursor: 0,
+            dir: Direction::Next,
+            meta: Vec::new(),
+            query: String::new(),
+            imgs: HashMap::new(),
+            chapter_line_offsets: vec![0],
+            toc_tree: Vec::new(),
+            toc_expanded: Vec::new(),
+            toc_visible: Vec::new(),
+            path_to_chapter: HashMap::new(),
+            bionic: false,
+            focus: false,
+            tts_engine: None,
+            tts_active: false,
+            tts_sentences: Vec::new(),
+            tts_sentence_idx: 0,
+            tts_child: None,
+            tts_buffer: None,
+        }
+    }
+
     fn search(&mut self, args: SearchArgs) -> bool {
         if self.chapters.is_empty() {
             return false;

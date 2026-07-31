@@ -488,7 +488,7 @@ fn detect_encoding(head: &str) -> Option<&str> {
             let end = rest[1..].find(delim)?;
             return Some(&rest[1..1 + end]);
         }
-        let end = rest.find(|c: char| c.is_whitespace() || c == '>')?;
+        let end = rest.find(|c: char| c.is_whitespace() || c == '>' || c == '"' || c == '\'')?;
         return Some(&rest[..end]);
     }
     None
@@ -551,5 +551,162 @@ fn windows1252_to_char(byte: u8) -> char {
         0x9A => '\u{0161}', 0x9B => '\u{203A}', 0x9C => '\u{0153}',
         0x9E => '\u{017E}', 0x9F => '\u{0178}',
         _ => byte as char,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_windows1252_to_char_punctuation() {
+        assert_eq!(windows1252_to_char(0x93), '\u{201C}'); // left double quote
+        assert_eq!(windows1252_to_char(0x94), '\u{201D}'); // right double quote
+        assert_eq!(windows1252_to_char(0x91), '\u{2018}'); // left single quote
+        assert_eq!(windows1252_to_char(0x92), '\u{2019}'); // right single quote
+        assert_eq!(windows1252_to_char(0x96), '\u{2013}'); // en dash
+        assert_eq!(windows1252_to_char(0x97), '\u{2014}'); // em dash
+        assert_eq!(windows1252_to_char(0x85), '\u{2026}'); // ellipsis
+        assert_eq!(windows1252_to_char(0x99), '\u{2122}'); // trademark
+        assert_eq!(windows1252_to_char(0x80), '\u{20AC}'); // euro
+    }
+
+    #[test]
+    fn test_windows1252_to_char_ascii() {
+        // Bytes 0x00-0x7F and unmapped 0x80-0xFF map to the same char
+        assert_eq!(windows1252_to_char(0x41), 'A');
+        assert_eq!(windows1252_to_char(0x20), ' ');
+        assert_eq!(windows1252_to_char(0x61), 'a');
+        assert_eq!(windows1252_to_char(0x30), '0');
+        assert_eq!(windows1252_to_char(0x7E), '~');
+    }
+
+    #[test]
+    fn test_decode_windows1252() {
+        // Smart quotes in Windows-1252: 0x93 0x93 = "
+        let bytes = &[0x48, 0x65, 0x93, 0x6C, 0x6F];
+        let result = decode_windows1252(bytes);
+        assert_eq!(result, "He\u{201C}lo");
+    }
+
+    #[test]
+    fn test_detect_encoding_xml_declaration() {
+        let head = r##"<?xml version="1.0" encoding="windows-1252"?>"##;
+        assert_eq!(detect_encoding(head), Some("windows-1252"));
+    }
+
+    #[test]
+    fn test_detect_encoding_xml_single_quote() {
+        let head = r##"<?xml version='1.0' encoding='iso-8859-1'?>"##;
+        assert_eq!(detect_encoding(head), Some("iso-8859-1"));
+    }
+
+    #[test]
+    fn test_detect_encoding_html_charset() {
+        let head = r##"<meta charset="utf-8">"##;
+        assert_eq!(detect_encoding(head), Some("utf-8"));
+    }
+
+    #[test]
+    fn test_detect_encoding_html_meta_content() {
+        // charset= without surrounding quotes, inside a content="..." attribute
+        let head = r##"<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">"##;
+        assert_eq!(detect_encoding(head), Some("iso-8859-1"));
+    }
+
+    #[test]
+    fn test_detect_encoding_none() {
+        assert_eq!(detect_encoding("<html><head><title>Test</title>"), None);
+    }
+
+    #[test]
+    fn test_fix_double_encoded_smart_quote() {
+        // " (U+201C) double-encoded as Latin-1: â (C3 A2) C2 93
+        // The â (0xC3 0xA2) is the double-encoded start for 0xE2 (â)
+        // Then C2 93 is the double-encoded 0x93 (the byte within the UTF-8 sequence)
+        let input = "\u{e2}\u{80}\u{9c}"; // This is already a proper left double quote
+        // We need to simulate double encoding: the char 'â' (U+00E2) followed by continuation bytes
+        // Actually let me think about this more carefully.
+        // The double encoding happens when UTF-8 bytes are interpreted as Latin-1.
+        // The LEFT DOUBLE QUOTATION MARK U+201C in UTF-8 is E2 80 9C.
+        // If these bytes are read as Latin-1, they become â (U+00E2), (unprintable), (unprintable).
+        // Then re-saving as UTF-8 gives C3 A2 (for â) C2 80 C2 9C.
+        // The fix_double_encoded function looks for C3 A2 (â) followed by C2 xx sequences.
+        // Let's construct the double-encoded form:
+        // "hello" where the " is U+201C (left double quotation mark)
+        // Original UTF-8: E2 80 9C
+        // After misinterpreting as Latin-1 and re-encoding: 
+        // â (E2) -> C3 A2, (80) -> C2 80, (9C) -> C2 9C
+        // So double-encoded: C3 A2 C2 80 C2 9C
+        let double_encoded = "\u{e2}\u{80}\u{9c}";
+        // Wait, this is the actual UTF-8 for â then 
+        // Actually U+00E2 is â, U+0080 is a control char, U+009C is a control char
+        // So the string literal "\u{e2}\u{80}\u{9c}" is â + control + control
+        // But the double-encoded form in bytes would be: C3 A2 (for the original E2) C2 80 C2 9C
+        // In Rust, "\u{e2}" is the char U+00E2 which in UTF-8 is C3 A2.
+        // "\u{80}" is U+0080 which in UTF-8 is C2 80.
+        // "\u{9c}" is U+009C which in UTF-8 is C2 9C.
+        // So the string we need is: "\u{e2}\u{80}\u{9c}" which in bytes is C3 A2 C2 80 C2 9C.
+        // This matches the double-encoded pattern!
+        let result = fix_double_encoded(double_encoded);
+        assert_eq!(result, "\u{201c}");
+    }
+
+    #[test]
+    fn test_fix_double_encoded_unchanged() {
+        // Normal ASCII text should pass through unchanged
+        assert_eq!(fix_double_encoded("hello world"), "hello world");
+    }
+
+    #[test]
+    fn test_fix_double_encoded_utf8() {
+        // Proper UTF-8 multi-byte chars should not be affected
+        let input = "caf\u{e9}"; // café (é is U+00E9, UTF-8: C3 A9)
+        assert_eq!(fix_double_encoded(input), input);
+    }
+
+    #[test]
+    fn test_decode_text_utf8() {
+        let bytes = b"hello world";
+        let result = decode_text(bytes);
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn test_decode_text_utf8_with_accents() {
+        let bytes = "caf\u{e9}".as_bytes(); // UTF-8 encoded é
+        let result = decode_text(bytes);
+        assert_eq!(result, "caf\u{e9}");
+    }
+
+    #[test]
+    fn test_decode_text_windows1252() {
+        // 0x93 is left double quote in Windows-1252, not valid UTF-8
+        let bytes = &[0x48, 0x65, 0x93, 0x6C, 0x6F];
+        let result = decode_text(bytes);
+        assert_eq!(result, "He\u{201C}lo");
+    }
+
+    #[test]
+    fn test_epub_new_loads_chapters() {
+        let epub = Epub::new("test/test.epub", false)
+            .expect("failed to load test EPUB");
+        assert!(!epub.chapters.is_empty(), "EPUB should have chapters");
+        assert!(!epub.toc_tree.is_empty(), "EPUB should have TOC entries");
+        assert!(!epub.path_to_chapter.is_empty(), "EPUB should have path mapping");
+    }
+
+    #[test]
+    fn test_epub_new_meta_only() {
+        let epub = Epub::new("test/test.epub", true)
+            .expect("failed to load test EPUB");
+        assert!(epub.chapters.is_empty(), "meta-only EPUB should have no chapters");
+        assert!(!epub.meta.is_empty(), "meta-only EPUB should have metadata");
+    }
+
+    #[test]
+    fn test_epub_new_invalid_path() {
+        let result = Epub::new("test/nonexistent.epub", false);
+        assert!(result.is_err(), "should fail on nonexistent file");
     }
 }
